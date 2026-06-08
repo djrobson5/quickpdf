@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="QuickPDF-logo.svg" alt="QuickPDF" width="128" />
+</p>
+
 A lightweight, **fully offline** PDF tool for personal use. Built because I hate using Adobe tools and wanted something snappier and lightweight. All PDF processing happens locally in the app;
 files never leave your machine.
 
