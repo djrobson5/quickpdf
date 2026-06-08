@@ -1,13 +1,7 @@
 # QuickPDF
 
-A lightweight, **fully offline** PDF tool for personal use. Built to be fast and
-small — the opposite of Adobe. All PDF processing happens locally in the app;
+A lightweight, **fully offline** PDF tool for personal use. Built because I hate using Adobe tools and wanted something snappier and lightweight. All PDF processing happens locally in the app;
 files never leave your machine.
-
-## Why it exists
-
-Adobe is heavy, slow, and makes simple things (like joining files) hard. QuickPDF
-covers the everyday essentials in a snappy native window.
 
 ## Features
 
@@ -57,4 +51,4 @@ npm run build         # type-check + build the frontend only
 npm run tauri build   # produce a distributable installer
 ```
 
-Requires Node.js and the Rust toolchain (both already set up).
+Requires Node.js and the Rust toolchain
