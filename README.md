@@ -5,6 +5,17 @@
 A lightweight, **fully offline** PDF tool for personal use. Built because I hate using Adobe tools and wanted something snappier and lightweight. All PDF processing happens locally in the app;
 files never leave your machine.
 
+## Screenshots
+
+<p align="center">
+  <img src="assets/screenshots/quickpdf1.gif" alt="QuickPDF demo" width="800" />
+</p>
+
+<p align="center">
+  <img src="assets/screenshots/quickpdf2.gif" alt="QuickPDF demo" width="49%" />
+  <img src="assets/screenshots/quickpdf3.gif" alt="QuickPDF demo" width="49%" />
+</p>
+
 ## Features
 
 - **Open & view** — open PDFs (button or drag-drop), every page as a crisp thumbnail, click any page for a large viewer with an **Enhance** contrast toggle for faint scans
