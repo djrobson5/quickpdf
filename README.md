@@ -7,14 +7,29 @@ files never leave your machine.
 
 ## Screenshots
 
-<p align="center">
-  <img src="assets/screenshots/quickpdf1.gif" alt="QuickPDF demo" width="800" />
-</p>
-
-<p align="center">
-  <img src="assets/screenshots/quickpdf2.gif" alt="QuickPDF demo" width="49%" />
-  <img src="assets/screenshots/quickpdf3.gif" alt="QuickPDF demo" width="49%" />
-</p>
+<div align="center">
+  <table>
+    <tr>
+      <td colspan="2" align="center">
+        <img src="assets/screenshots/quickpdf1.gif" alt="Reordering pages by drag-and-drop" width="800" />
+        <br />
+        <sub>Drag to reorder pages</sub>
+      </td>
+    </tr>
+    <tr>
+      <td align="center">
+        <img src="assets/screenshots/quickpdf2.gif" alt="Stamping text onto a PDF page" width="390" />
+        <br />
+        <sub>Add &amp; edit text</sub>
+      </td>
+      <td align="center">
+        <img src="assets/screenshots/quickpdf3.gif" alt="Drawing and placing a signature" width="390" />
+        <br />
+        <sub>Draw &amp; place signatures</sub>
+      </td>
+    </tr>
+  </table>
+</div>
 
 ## Features
 
