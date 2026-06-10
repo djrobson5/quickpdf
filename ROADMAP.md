@@ -16,17 +16,25 @@ the saved PDF) with a groups bar to select / rename / gather / send-to-top or
 true multi-page drag (drag preview pile + insertion indicator) so a whole
 selection moves as a block.
 
+## Shipped — v0.2.0
+
+**Markup & annotation:** a markup toolbar in the page viewer — highlight /
+underline / strikethrough (drag a band), freehand pen, line / arrow / rectangle,
+and colour sticky-note comments; all baked into the saved PDF (rotation-correct).
+
+**Everyday quality-of-life:** insert blank / duplicate pages; a thumbnail-size
+slider; viewer zoom (scroll / pinch / Ctrl-scroll, drag to pan); **save-in-place**
+(Ctrl+S overwrites the open file) + a recent-files list.
+
+**Distribution:** **automatic updates** from GitHub Releases (signed Tauri
+updater) and a GitHub Actions workflow that builds, signs, and publishes the
+installer on each version tag.
+
 ---
 
-## Candidates — v0.2.0
+## Candidates — next
 
 Effort estimates are rough. Themes are independent; pick a focused set.
-
-### A. Markup & annotation
-Biggest gap vs. full PDF tools; reuses the existing overlay → bake pipeline.
-- Highlight / underline / strikethrough text
-- Freehand draw (ink) + shapes (line, arrow, rectangle) + sticky notes
-- Effort: **medium**
 
 ### B. Scan power tools (fits scan-heavy use)
 - **OCR → searchable text layer** (select / copy / Find text in scans).
@@ -36,24 +44,13 @@ Biggest gap vs. full PDF tools; reuses the existing overlay → bake pipeline.
 - **Scan cleanup** — bake auto-contrast / B&W / deskew into output; evolution of
   the "Enhance" toggle. Effort: **medium**
 
-### C. Everyday quality-of-life
-- **Save in place** (Ctrl+S overwrites the opened file) alongside Save As — **easy**
+### More quality-of-life (the rest of the v0.2.0 "C" set, not yet done)
 - **Undo / redo** (real history) instead of only "Reset" — **medium**
-- **Recent files** list — **easy**
-- **Zoom controls** + **thumbnail-size slider** in the viewer — **easy–medium**
-- **Insert blank / duplicate page**, **page numbering**, **watermark** — **easy** each
-
-### D. Distribution (now that it's public)
-- **Auto-update** (Tauri updater) — new versions install from GitHub Releases — **medium**, high leverage
-- **GitHub Actions CI** — build installer + attach to release on each tag — **medium**
-- Code signing to avoid the Windows SmartScreen warning — *costs money for a cert; note only*
+- **Page numbering**, **watermark** — **easy** each
 
 ### Constraint to flag
 - **Password / encryption** (add/remove): `pdf-lib` **cannot encrypt or decrypt**.
   Would require a Rust sidecar (e.g. qpdf) — heavier than the rest.
 
----
-
-### Suggested focus for v0.2.0
-**C (QoL backbone)** + **one headliner** — **A (markup)** for general use *or*
-**B (OCR/compress)** for scans — plus **D's auto-update** since releases are now public.
+### Not planned
+- Windows code signing to remove the SmartScreen warning — *needs a paid cert.*
