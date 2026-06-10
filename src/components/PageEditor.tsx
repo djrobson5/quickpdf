@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { PDFDocumentProxy } from "../lib/pdfjs";
 import { usePageCanvas } from "../lib/usePageCanvas";
 import type {
+  Annotation,
   FieldValue,
   PageItem,
   SigPlacement,
@@ -10,8 +11,26 @@ import type {
 import { FormField, type FieldKind, type FieldWidget } from "./FormField";
 import { SignatureBox } from "./SignatureBox";
 import { SignatureDialog } from "./SignatureDialog";
+import { AnnotationLayer, type Tool } from "./AnnotationLayer";
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+
+// Markup palette. data-tool lets CSS style the U/S glyphs (under/through line).
+const TOOLS: { tool: Tool; label: string; title: string }[] = [
+  { tool: "select", label: "▣", title: "Select / delete markup" },
+  { tool: "highlight", label: "H", title: "Highlight" },
+  { tool: "underline", label: "U", title: "Underline" },
+  { tool: "strike", label: "S", title: "Strikethrough" },
+  { tool: "ink", label: "✎", title: "Freehand pen" },
+  { tool: "line", label: "╱", title: "Line" },
+  { tool: "arrow", label: "↗", title: "Arrow" },
+  { tool: "rect", label: "▭", title: "Rectangle" },
+];
+const WIDTHS = [
+  { w: 1, label: "S", title: "Thin" },
+  { w: 2, label: "M", title: "Medium" },
+  { w: 3.5, label: "L", title: "Thick" },
+];
 
 // Subset of a pdf.js annotation we care about (its TS types are loose).
 type AnyAnnotation = {
@@ -45,6 +64,7 @@ export function PageEditor({
   index,
   stamps,
   signatures,
+  annots,
   formValues,
   onClose,
   onNavigate,
@@ -54,6 +74,9 @@ export function PageEditor({
   onAddSignature,
   onUpdateSignature,
   onDeleteSignature,
+  onAddAnnot,
+  onUpdateAnnot,
+  onDeleteAnnot,
   onSetField,
 }: {
   pdfFor: (item: PageItem) => PDFDocumentProxy | undefined;
@@ -61,6 +84,7 @@ export function PageEditor({
   index: number;
   stamps: TextStamp[];
   signatures: SigPlacement[];
+  annots: Annotation[];
   formValues: Record<string, FieldValue>;
   onClose: () => void;
   onNavigate: (n: number) => void;
@@ -70,6 +94,9 @@ export function PageEditor({
   onAddSignature: (pageId: string, dataUrl: string) => void;
   onUpdateSignature: (id: string, patch: Partial<SigPlacement>) => void;
   onDeleteSignature: (id: string) => void;
+  onAddAnnot: (a: Omit<Annotation, "id">) => void;
+  onUpdateAnnot: (id: string, patch: Partial<Annotation>) => void;
+  onDeleteAnnot: (id: string) => void;
   onSetField: (name: string, value: FieldValue) => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -80,11 +107,47 @@ export function PageEditor({
   const [pagePtW, setPagePtW] = useState(0);
   const [fields, setFields] = useState<FieldWidget[]>([]);
   const [showSig, setShowSig] = useState(false);
+  const [tool, setTool] = useState<Tool>("select");
+  const [annotColor, setAnnotColor] = useState("#ef4444");
+  const [annotWidth, setAnnotWidth] = useState(2);
+  const [selectedAnnot, setSelectedAnnot] = useState<string | null>(null);
 
   const item = pages[index];
   const pdf = pdfFor(item);
   const pageStamps = stamps.filter((s) => s.pageId === item.id);
   const pageSigs = signatures.filter((s) => s.pageId === item.id);
+  const pageAnnots = annots.filter((a) => a.pageId === item.id);
+
+  const pickTool = useCallback((t: Tool) => {
+    setTool(t);
+    setSelectedAnnot(null);
+  }, []);
+
+  const removeSelectedAnnot = useCallback(() => {
+    if (selectedAnnot) onDeleteAnnot(selectedAnnot);
+    setSelectedAnnot(null);
+  }, [selectedAnnot, onDeleteAnnot]);
+
+  // When a markup is selected, the colour/width controls reflect it and editing
+  // them updates it in place; otherwise they set the defaults for the next mark.
+  const selectedItem = pageAnnots.find((a) => a.id === selectedAnnot);
+  const uiColor = selectedItem?.color ?? annotColor;
+  const uiWidth = selectedItem?.width ?? annotWidth;
+
+  const changeColor = useCallback(
+    (c: string) => {
+      setAnnotColor(c);
+      if (selectedAnnot) onUpdateAnnot(selectedAnnot, { color: c });
+    },
+    [selectedAnnot, onUpdateAnnot],
+  );
+  const changeWidth = useCallback(
+    (w: number) => {
+      setAnnotWidth(w);
+      if (selectedAnnot) onUpdateAnnot(selectedAnnot, { width: w });
+    },
+    [selectedAnnot, onUpdateAnnot],
+  );
 
   const goPrev = useCallback(() => {
     if (index > 0) onNavigate(index - 1);
@@ -93,18 +156,32 @@ export function PageEditor({
     if (index < pages.length - 1) onNavigate(index + 1);
   }, [index, pages.length, onNavigate]);
 
-  // Keyboard: arrows navigate (unless typing); Esc closes.
+  // Keyboard: arrows navigate (unless typing); Delete removes selected markup;
+  // Esc steps back (drawing tool → select → deselect → close).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement | null;
       const typing = t && (t.tagName === "TEXTAREA" || t.tagName === "INPUT");
-      if (e.key === "Escape") onClose();
-      else if (!typing && e.key === "ArrowLeft") goPrev();
+      if (e.key === "Escape") {
+        if (tool !== "select") pickTool("select");
+        else if (selectedAnnot) setSelectedAnnot(null);
+        else onClose();
+      } else if (
+        !typing &&
+        (e.key === "Delete" || e.key === "Backspace") &&
+        selectedAnnot
+      ) {
+        e.preventDefault();
+        removeSelectedAnnot();
+      } else if (!typing && e.key === "ArrowLeft") goPrev();
       else if (!typing && e.key === "ArrowRight") goNext();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose, goPrev, goNext]);
+  }, [onClose, goPrev, goNext, tool, selectedAnnot, pickTool, removeSelectedAnnot]);
+
+  // Selecting a markup is per-page; drop the selection when the page changes.
+  useEffect(() => setSelectedAnnot(null), [index]);
 
   usePageCanvas(
     canvasRef,
@@ -187,6 +264,52 @@ export function PageEditor({
         <span className="viewer-page">
           Page {index + 1} / {pages.length}
         </span>
+
+        <div className="annot-tools">
+          {TOOLS.map((t) => (
+            <button
+              key={t.tool}
+              data-tool={t.tool}
+              className={`atool ${tool === t.tool ? "active" : ""}`}
+              onClick={() => pickTool(t.tool)}
+              title={t.title}
+              aria-label={t.title}
+            >
+              {t.label}
+            </button>
+          ))}
+          <span className="annot-sep" />
+          <input
+            type="color"
+            className="atool-color"
+            value={uiColor}
+            onChange={(e) => changeColor(e.target.value)}
+            title="Markup colour"
+          />
+          {WIDTHS.map((x) => (
+            <button
+              key={x.w}
+              className={`atool wbtn ${uiWidth === x.w ? "active" : ""}`}
+              onClick={() => changeWidth(x.w)}
+              title={`${x.title} stroke`}
+            >
+              {x.label}
+            </button>
+          ))}
+          {selectedAnnot && (
+            <>
+              <span className="annot-sep" />
+              <button
+                className="btn sm danger"
+                onClick={removeSelectedAnnot}
+                title="Delete selected markup (Del)"
+              >
+                Delete
+              </button>
+            </>
+          )}
+        </div>
+
         <div className="viewer-bar-actions">
           <button
             className="btn accent"
@@ -221,7 +344,16 @@ export function PageEditor({
       </button>
 
       <div className="viewer-stage" onClick={(e) => e.stopPropagation()}>
-        <div className="editor-stage" ref={stageRef}>
+        <div
+          className={`editor-stage ${tool === "select" ? "" : "drawing"}`}
+          ref={stageRef}
+          onPointerDown={(e) => {
+            // A bare click on the page (no shape/stamp) clears the selection.
+            const tag = (e.target as HTMLElement).tagName;
+            if (tag === "CANVAS" || e.target === e.currentTarget)
+              setSelectedAnnot(null);
+          }}
+        >
           <canvas ref={canvasRef} className={ready ? "ready" : ""} />
           <div className="form-layer">
             {fields.map((f) => (
@@ -257,6 +389,21 @@ export function PageEditor({
               />
             ))}
           </div>
+          <AnnotationLayer
+            pageId={item.id}
+            annots={pageAnnots}
+            tool={tool}
+            color={annotColor}
+            width={annotWidth}
+            pxPerPt={pxPerPt}
+            stageW={stageW}
+            stageH={stageH}
+            stageRef={stageRef}
+            selectedId={selectedAnnot}
+            onSelect={setSelectedAnnot}
+            onAdd={onAddAnnot}
+            onUpdate={onUpdateAnnot}
+          />
         </div>
       </div>
 

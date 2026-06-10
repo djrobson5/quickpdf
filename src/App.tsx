@@ -38,6 +38,8 @@ import {
   type BakedImage,
   type FieldValue,
   type SigPlacement,
+  type Annotation,
+  type BakedAnnot,
 } from "./lib/pdfEdit";
 import { dataUrlToBytes, imageSize } from "./lib/signatures";
 import {
@@ -66,6 +68,7 @@ export default function App() {
   const [pages, setPages] = useState<PageItem[]>([]);
   const [stamps, setStamps] = useState<TextStamp[]>([]);
   const [sigs, setSigs] = useState<SigPlacement[]>([]);
+  const [annots, setAnnots] = useState<Annotation[]>([]);
   const [formValues, setFormValues] = useState<
     Record<string, Record<string, FieldValue>>
   >({});
@@ -198,6 +201,12 @@ export default function App() {
         setPages(srcs.flatMap((s) => initialPages(s.id, s.numPages)));
         setSelected(new Set());
         setGroupNames({});
+        // Fresh document: drop any overlays from a previous one (their page ids
+        // are now orphaned anyway).
+        setStamps([]);
+        setSigs([]);
+        setAnnots([]);
+        setFormValues({});
         setDirty(files.length > 1);
       } catch (e) {
         setError(`Could not open: ${String(e)}`);
@@ -456,6 +465,77 @@ export default function App() {
     return out;
   }, [sigs, pageById, sourceById]);
 
+  // ----- Annotations (markup & drawing) -----
+  const addAnnot = useCallback((a: Omit<Annotation, "id">) => {
+    setAnnots((prev) => [...prev, { ...a, id: crypto.randomUUID() }]);
+    setDirty(true);
+  }, []);
+
+  const updateAnnot = useCallback((id: string, patch: Partial<Annotation>) => {
+    setAnnots((prev) => prev.map((a) => (a.id === id ? { ...a, ...patch } : a)));
+    setDirty(true);
+  }, []);
+
+  const deleteAnnot = useCallback((id: string) => {
+    setAnnots((prev) => prev.filter((a) => a.id !== id));
+    setDirty(true);
+  }, []);
+
+  // Resolve normalized annotation points into PDF user space — one viewport
+  // transform per point, so page /Rotate is handled exactly (same as stamps).
+  const bakeAnnots = useCallback(async (): Promise<Map<string, BakedAnnot[]>> => {
+    type VP = {
+      width: number;
+      height: number;
+      convertToPdfPoint: (x: number, y: number) => number[];
+    };
+    const out = new Map<string, BakedAnnot[]>();
+    const vpCache = new Map<string, VP>();
+    for (const a of annots) {
+      if (a.points.length < 2) continue;
+      const item = pageById.get(a.pageId);
+      if (!item) continue;
+      const src = sourceById.get(item.srcId);
+      if (!src) continue;
+      const key = `${item.srcId}:${item.srcIndex}:${item.rotation}`;
+      let cached = vpCache.get(key);
+      if (!cached) {
+        const page = await src.pdf.getPage(item.srcIndex + 1);
+        const total = (page.rotate + item.rotation) % 360;
+        cached = page.getViewport({ scale: 1, rotation: total }) as unknown as VP;
+        vpCache.set(key, cached);
+      }
+      const vp = cached;
+      // Underline/strike are a line on a dragged band. Resolve that line in
+      // (rotation-aware) display space first — "bottom"/"middle" only make sense
+      // there — then convert its endpoints, so it bakes correctly on /Rotate
+      // pages. Every other kind just converts its raw points (a straight segment
+      // between two correctly-placed points is rotation-agnostic).
+      let src2 = a.points;
+      if (a.kind === "underline" || a.kind === "strike") {
+        const xs = a.points.map((p) => p.x);
+        const ys = a.points.map((p) => p.y);
+        const xLo = Math.min(...xs);
+        const xHi = Math.max(...xs);
+        const yLo = Math.min(...ys);
+        const yHi = Math.max(...ys);
+        const y = a.kind === "underline" ? yHi : (yLo + yHi) / 2; // bottom = larger y
+        src2 = [
+          { x: xLo, y },
+          { x: xHi, y },
+        ];
+      }
+      const pts = src2.map((p) => {
+        const [px, py] = vp.convertToPdfPoint(p.x * vp.width, p.y * vp.height);
+        return { x: px, y: py };
+      });
+      const arr = out.get(a.pageId) ?? [];
+      arr.push({ kind: a.kind, color: a.color, pts, width: a.width });
+      out.set(a.pageId, arr);
+    }
+    return out;
+  }, [annots, pageById, sourceById]);
+
   const onDragStart = useCallback(
     (e: DragStartEvent) => {
       const activeId = String(e.active.id);
@@ -539,6 +619,7 @@ export default function App() {
     setPages(sources.flatMap((s) => initialPages(s.id, s.numPages)));
     setStamps([]);
     setSigs([]);
+    setAnnots([]);
     setFormValues({});
     setSelected(new Set());
     setGroupNames({});
@@ -727,7 +808,8 @@ export default function App() {
     try {
       const baked = await bakeStamps();
       const sigMap = await bakeSignatures();
-      const bytes = await buildPdf(bytesById, pages, baked, formMap, sigMap);
+      const annotMap = await bakeAnnots();
+      const bytes = await buildPdf(bytesById, pages, baked, formMap, sigMap, annotMap);
       const path = await savePdf(bytes, `${baseName}-edited.pdf`);
       if (path) {
         setDirty(false);
@@ -738,7 +820,7 @@ export default function App() {
     } finally {
       setBusy(false);
     }
-  }, [pages, bytesById, bakeStamps, bakeSignatures, formMap, baseName, flash]);
+  }, [pages, bytesById, bakeStamps, bakeSignatures, bakeAnnots, formMap, baseName, flash]);
 
   const extractSelected = useCallback(async () => {
     const chosen = pages.filter((p) => selected.has(p.id));
@@ -748,7 +830,8 @@ export default function App() {
     try {
       const baked = await bakeStamps();
       const sigMap = await bakeSignatures();
-      const bytes = await buildPdf(bytesById, chosen, baked, formMap, sigMap);
+      const annotMap = await bakeAnnots();
+      const bytes = await buildPdf(bytesById, chosen, baked, formMap, sigMap, annotMap);
       const path = await savePdf(bytes, `${baseName}-extract.pdf`);
       if (path) flash(`Extracted ${chosen.length} page${chosen.length === 1 ? "" : "s"}.`);
     } catch (e) {
@@ -756,7 +839,7 @@ export default function App() {
     } finally {
       setBusy(false);
     }
-  }, [pages, selected, bytesById, bakeStamps, bakeSignatures, formMap, baseName, flash]);
+  }, [pages, selected, bytesById, bakeStamps, bakeSignatures, bakeAnnots, formMap, baseName, flash]);
 
   const doSplit = useCallback(
     async (chunkSize: number) => {
@@ -765,6 +848,7 @@ export default function App() {
       try {
         const baked = await bakeStamps();
         const sigMap = await bakeSignatures();
+        const annotMap = await bakeAnnots();
         const parts = await splitPdf(
           bytesById,
           pages,
@@ -773,6 +857,7 @@ export default function App() {
           baked,
           formMap,
           sigMap,
+          annotMap,
         );
         const dir = await saveMany(parts);
         if (dir) {
@@ -785,7 +870,7 @@ export default function App() {
         setBusy(false);
       }
     },
-    [pages, bytesById, bakeStamps, bakeSignatures, formMap, baseName, flash],
+    [pages, bytesById, bakeStamps, bakeSignatures, bakeAnnots, formMap, baseName, flash],
   );
 
   const exportImages = useCallback(async () => {
@@ -797,7 +882,8 @@ export default function App() {
       // Render the *final* pages (overlays baked in) so exports are WYSIWYG.
       const baked = await bakeStamps();
       const sigMap = await bakeSignatures();
-      const pdfBytes = await buildPdf(bytesById, chosen, baked, formMap, sigMap);
+      const annotMap = await bakeAnnots();
+      const pdfBytes = await buildPdf(bytesById, chosen, baked, formMap, sigMap, annotMap);
       const doc = await loadPdfDocument(pdfBytes.slice(0)).promise;
       const scale = 2;
       const files: { name: string; bytes: Uint8Array }[] = [];
@@ -822,7 +908,7 @@ export default function App() {
     } finally {
       setBusy(false);
     }
-  }, [pages, selected, bytesById, bakeStamps, bakeSignatures, formMap, baseName, flash]);
+  }, [pages, selected, bytesById, bakeStamps, bakeSignatures, bakeAnnots, formMap, baseName, flash]);
 
   // Save one PDF per color-group (in palette order), with overlays baked in.
   const exportGroups = useCallback(async () => {
@@ -832,11 +918,12 @@ export default function App() {
     try {
       const baked = await bakeStamps();
       const sigMap = await bakeSignatures();
+      const annotMap = await bakeAnnots();
       const files: { name: string; bytes: Uint8Array }[] = [];
       for (const g of groupsInUse) {
         const groupPages = pages.filter((p) => p.group === g.id);
         if (!groupPages.length) continue;
-        const bytes = await buildPdf(bytesById, groupPages, baked, formMap, sigMap);
+        const bytes = await buildPdf(bytesById, groupPages, baked, formMap, sigMap, annotMap);
         const safe =
           g.label.replace(/[^\w.-]+/g, "_").replace(/^_+|_+$/g, "") || g.id;
         files.push({ name: `${baseName}-${safe}.pdf`, bytes });
@@ -855,6 +942,7 @@ export default function App() {
     bytesById,
     bakeStamps,
     bakeSignatures,
+    bakeAnnots,
     formMap,
     baseName,
     flash,
@@ -865,6 +953,7 @@ export default function App() {
     setPages([]);
     setStamps([]);
     setSigs([]);
+    setAnnots([]);
     setFormValues({});
     setSelected(new Set());
     setGroupNames({});
@@ -1210,6 +1299,7 @@ export default function App() {
           index={preview}
           stamps={stamps}
           signatures={sigs}
+          annots={annots}
           formValues={formValues[pages[preview].srcId] ?? {}}
           onClose={() => setPreview(null)}
           onNavigate={(n) => setPreview(n)}
@@ -1219,6 +1309,9 @@ export default function App() {
           onAddSignature={addSignature}
           onUpdateSignature={updateSignature}
           onDeleteSignature={deleteSignature}
+          onAddAnnot={addAnnot}
+          onUpdateAnnot={updateAnnot}
+          onDeleteAnnot={deleteAnnot}
           onSetField={(name, value) =>
             setFormValue(pages[preview].srcId, name, value)
           }
