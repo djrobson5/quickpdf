@@ -40,6 +40,8 @@ import {
   type SigPlacement,
   type Annotation,
   type BakedAnnot,
+  type StickyNote,
+  type BakedNote,
 } from "./lib/pdfEdit";
 import { dataUrlToBytes, imageSize } from "./lib/signatures";
 import {
@@ -69,6 +71,7 @@ export default function App() {
   const [stamps, setStamps] = useState<TextStamp[]>([]);
   const [sigs, setSigs] = useState<SigPlacement[]>([]);
   const [annots, setAnnots] = useState<Annotation[]>([]);
+  const [notes, setNotes] = useState<StickyNote[]>([]);
   const [formValues, setFormValues] = useState<
     Record<string, Record<string, FieldValue>>
   >({});
@@ -206,6 +209,7 @@ export default function App() {
         setStamps([]);
         setSigs([]);
         setAnnots([]);
+        setNotes([]);
         setFormValues({});
         setDirty(files.length > 1);
       } catch (e) {
@@ -536,6 +540,121 @@ export default function App() {
     return out;
   }, [annots, pageById, sourceById]);
 
+  // ----- Sticky notes -----
+  const addNote = useCallback((pageId: string, xNorm: number, yNorm: number) => {
+    setNotes((prev) => [
+      ...prev,
+      {
+        id: crypto.randomUUID(),
+        pageId,
+        xNorm,
+        yNorm,
+        wNorm: 0.22,
+        text: "",
+        color: "#ffe27a",
+      },
+    ]);
+    setDirty(true);
+  }, []);
+
+  const updateNote = useCallback((id: string, patch: Partial<StickyNote>) => {
+    setNotes((prev) => prev.map((n) => (n.id === id ? { ...n, ...patch } : n)));
+    setDirty(true);
+  }, []);
+
+  const deleteNote = useCallback((id: string) => {
+    setNotes((prev) => prev.filter((n) => n.id !== id));
+    setDirty(true);
+  }, []);
+
+  // Resolve sticky notes for baking: wrap the text to the card width (measured
+  // with a canvas, ~Helvetica), size the card to the wrapped lines, then map the
+  // background corners + each text line to PDF space (rotation-exact, per point).
+  const bakeNotes = useCallback(async (): Promise<Map<string, BakedNote[]>> => {
+    type VP = {
+      width: number;
+      height: number;
+      convertToPdfPoint: (x: number, y: number) => number[];
+    };
+    const out = new Map<string, BakedNote[]>();
+    const vpCache = new Map<string, VP>();
+    const ctx = document.createElement("canvas").getContext("2d");
+    const FS = 11;
+    const PAD = 6;
+    const LH = FS * 1.3;
+    const TEXT_COLOR = "#202020";
+    for (const n of notes) {
+      const item = pageById.get(n.pageId);
+      if (!item) continue;
+      const src = sourceById.get(item.srcId);
+      if (!src) continue;
+      const key = `${item.srcId}:${item.srcIndex}:${item.rotation}`;
+      let cached = vpCache.get(key);
+      if (!cached) {
+        const page = await src.pdf.getPage(item.srcIndex + 1);
+        const total = (page.rotate + item.rotation) % 360;
+        cached = page.getViewport({ scale: 1, rotation: total }) as unknown as VP;
+        vpCache.set(key, cached);
+      }
+      const vp = cached;
+      const Wv = n.wNorm * vp.width;
+      const innerW = Math.max(8, Wv - 2 * PAD);
+      if (ctx) ctx.font = `${FS}px Helvetica, Arial, sans-serif`;
+      const measure = (s: string) =>
+        ctx ? ctx.measureText(s).width : s.length * FS * 0.5;
+
+      // Greedy word-wrap, preserving explicit newlines.
+      const wrapped: string[] = [];
+      for (const para of n.text.split("\n")) {
+        const words = para.split(/\s+/).filter(Boolean);
+        if (!words.length) {
+          wrapped.push("");
+          continue;
+        }
+        let line = "";
+        for (const w of words) {
+          const test = line ? `${line} ${w}` : w;
+          if (measure(test) <= innerW || !line) line = test;
+          else {
+            wrapped.push(line);
+            line = w;
+          }
+        }
+        wrapped.push(line);
+      }
+      if (!wrapped.length) wrapped.push("");
+
+      const vx0 = n.xNorm * vp.width;
+      const vy0 = n.yNorm * vp.height;
+      const cardH = 2 * PAD + wrapped.length * LH;
+      const [tlx, tly] = vp.convertToPdfPoint(vx0, vy0);
+      const [brx, bry] = vp.convertToPdfPoint(vx0 + Wv, vy0 + cardH);
+
+      const lines: BakedLine[] = [];
+      wrapped.forEach((text, i) => {
+        if (!text) return;
+        const vx = vx0 + PAD;
+        const vy = vy0 + PAD + i * LH + FS * 0.82;
+        const [ax, ay] = vp.convertToPdfPoint(vx, vy);
+        const [bx, by] = vp.convertToPdfPoint(vx + 10, vy);
+        const rotationDeg = (Math.atan2(by - ay, bx - ax) * 180) / Math.PI;
+        lines.push({ x: ax, y: ay, size: FS, color: TEXT_COLOR, rotationDeg, text });
+      });
+
+      const arr = out.get(n.pageId) ?? [];
+      arr.push({
+        x: Math.min(tlx, brx),
+        y: Math.min(tly, bry),
+        width: Math.abs(brx - tlx),
+        height: Math.abs(bry - tly),
+        color: n.color,
+        lines,
+      });
+      out.set(n.pageId, arr);
+    }
+    return out;
+  }, [notes, pageById, sourceById]);
+
   const onDragStart = useCallback(
     (e: DragStartEvent) => {
       const activeId = String(e.active.id);
@@ -620,6 +739,7 @@ export default function App() {
     setStamps([]);
     setSigs([]);
     setAnnots([]);
+    setNotes([]);
     setFormValues({});
     setSelected(new Set());
     setGroupNames({});
@@ -809,7 +929,8 @@ export default function App() {
       const baked = await bakeStamps();
       const sigMap = await bakeSignatures();
       const annotMap = await bakeAnnots();
-      const bytes = await buildPdf(bytesById, pages, baked, formMap, sigMap, annotMap);
+      const noteMap = await bakeNotes();
+      const bytes = await buildPdf(bytesById, pages, baked, formMap, sigMap, annotMap, noteMap);
       const path = await savePdf(bytes, `${baseName}-edited.pdf`);
       if (path) {
         setDirty(false);
@@ -820,7 +941,7 @@ export default function App() {
     } finally {
       setBusy(false);
     }
-  }, [pages, bytesById, bakeStamps, bakeSignatures, bakeAnnots, formMap, baseName, flash]);
+  }, [pages, bytesById, bakeStamps, bakeSignatures, bakeAnnots, bakeNotes, formMap, baseName, flash]);
 
   const extractSelected = useCallback(async () => {
     const chosen = pages.filter((p) => selected.has(p.id));
@@ -831,7 +952,8 @@ export default function App() {
       const baked = await bakeStamps();
       const sigMap = await bakeSignatures();
       const annotMap = await bakeAnnots();
-      const bytes = await buildPdf(bytesById, chosen, baked, formMap, sigMap, annotMap);
+      const noteMap = await bakeNotes();
+      const bytes = await buildPdf(bytesById, chosen, baked, formMap, sigMap, annotMap, noteMap);
       const path = await savePdf(bytes, `${baseName}-extract.pdf`);
       if (path) flash(`Extracted ${chosen.length} page${chosen.length === 1 ? "" : "s"}.`);
     } catch (e) {
@@ -839,7 +961,7 @@ export default function App() {
     } finally {
       setBusy(false);
     }
-  }, [pages, selected, bytesById, bakeStamps, bakeSignatures, bakeAnnots, formMap, baseName, flash]);
+  }, [pages, selected, bytesById, bakeStamps, bakeSignatures, bakeAnnots, bakeNotes, formMap, baseName, flash]);
 
   const doSplit = useCallback(
     async (chunkSize: number) => {
@@ -849,6 +971,7 @@ export default function App() {
         const baked = await bakeStamps();
         const sigMap = await bakeSignatures();
         const annotMap = await bakeAnnots();
+        const noteMap = await bakeNotes();
         const parts = await splitPdf(
           bytesById,
           pages,
@@ -858,6 +981,7 @@ export default function App() {
           formMap,
           sigMap,
           annotMap,
+          noteMap,
         );
         const dir = await saveMany(parts);
         if (dir) {
@@ -870,7 +994,7 @@ export default function App() {
         setBusy(false);
       }
     },
-    [pages, bytesById, bakeStamps, bakeSignatures, bakeAnnots, formMap, baseName, flash],
+    [pages, bytesById, bakeStamps, bakeSignatures, bakeAnnots, bakeNotes, formMap, baseName, flash],
   );
 
   const exportImages = useCallback(async () => {
@@ -883,7 +1007,8 @@ export default function App() {
       const baked = await bakeStamps();
       const sigMap = await bakeSignatures();
       const annotMap = await bakeAnnots();
-      const pdfBytes = await buildPdf(bytesById, chosen, baked, formMap, sigMap, annotMap);
+      const noteMap = await bakeNotes();
+      const pdfBytes = await buildPdf(bytesById, chosen, baked, formMap, sigMap, annotMap, noteMap);
       const doc = await loadPdfDocument(pdfBytes.slice(0)).promise;
       const scale = 2;
       const files: { name: string; bytes: Uint8Array }[] = [];
@@ -919,11 +1044,12 @@ export default function App() {
       const baked = await bakeStamps();
       const sigMap = await bakeSignatures();
       const annotMap = await bakeAnnots();
+      const noteMap = await bakeNotes();
       const files: { name: string; bytes: Uint8Array }[] = [];
       for (const g of groupsInUse) {
         const groupPages = pages.filter((p) => p.group === g.id);
         if (!groupPages.length) continue;
-        const bytes = await buildPdf(bytesById, groupPages, baked, formMap, sigMap, annotMap);
+        const bytes = await buildPdf(bytesById, groupPages, baked, formMap, sigMap, annotMap, noteMap);
         const safe =
           g.label.replace(/[^\w.-]+/g, "_").replace(/^_+|_+$/g, "") || g.id;
         files.push({ name: `${baseName}-${safe}.pdf`, bytes });
@@ -943,6 +1069,7 @@ export default function App() {
     bakeStamps,
     bakeSignatures,
     bakeAnnots,
+    bakeNotes,
     formMap,
     baseName,
     flash,
@@ -954,6 +1081,7 @@ export default function App() {
     setStamps([]);
     setSigs([]);
     setAnnots([]);
+    setNotes([]);
     setFormValues({});
     setSelected(new Set());
     setGroupNames({});
@@ -1300,6 +1428,7 @@ export default function App() {
           stamps={stamps}
           signatures={sigs}
           annots={annots}
+          notes={notes}
           formValues={formValues[pages[preview].srcId] ?? {}}
           onClose={() => setPreview(null)}
           onNavigate={(n) => setPreview(n)}
@@ -1312,6 +1441,9 @@ export default function App() {
           onAddAnnot={addAnnot}
           onUpdateAnnot={updateAnnot}
           onDeleteAnnot={deleteAnnot}
+          onAddNote={addNote}
+          onUpdateNote={updateNote}
+          onDeleteNote={deleteNote}
           onSetField={(name, value) =>
             setFormValue(pages[preview].srcId, name, value)
           }

@@ -1,8 +1,11 @@
 import { useCallback, useState } from "react";
 import type { AnnotKind, Annotation } from "../lib/pdfEdit";
 
-/** The active markup tool: "select" (edit existing) or a kind to draw. */
-export type Tool = "select" | AnnotKind;
+/**
+ * The active markup tool: "select" (edit existing markup), "note" (handled by
+ * PageEditor — click to place a sticky note), or an AnnotKind to draw.
+ */
+export type Tool = "select" | "note" | AnnotKind;
 
 const HILITE_OPACITY = 0.35;
 const MIN_DRAG = 0.008; // ignore near-zero drags (fraction of page)
@@ -149,7 +152,8 @@ export function AnnotationLayer({
   onUpdate: (id: string, patch: Partial<Annotation>) => void;
 }) {
   const [draft, setDraft] = useState<Pt[] | null>(null);
-  const drawing = tool !== "select";
+  // "note" is placed by PageEditor on the stage, not drawn here.
+  const drawing = tool !== "select" && tool !== "note";
 
   // Select a markup and drag it: translate all its points by the pointer delta,
   // clamped so its bounding box stays on the page (so the shape isn't distorted).
@@ -191,7 +195,7 @@ export function AnnotationLayer({
 
   const startDraw = useCallback(
     (e: React.PointerEvent) => {
-      if (e.button !== 0 || tool === "select") return;
+      if (e.button !== 0 || tool === "select" || tool === "note") return;
       const kind: AnnotKind = tool;
       e.preventDefault();
       e.stopPropagation();
@@ -254,7 +258,7 @@ export function AnnotationLayer({
                   height={b.h * stageH + 6}
                 />
               )}
-              {!drawing && (
+              {tool === "select" && (
                 <rect
                   x={b.x * stageW - HIT_PAD}
                   y={b.y * stageH - HIT_PAD}

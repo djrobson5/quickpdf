@@ -6,12 +6,14 @@ import type {
   FieldValue,
   PageItem,
   SigPlacement,
+  StickyNote,
   TextStamp,
 } from "../lib/pdfEdit";
 import { FormField, type FieldKind, type FieldWidget } from "./FormField";
 import { SignatureBox } from "./SignatureBox";
 import { SignatureDialog } from "./SignatureDialog";
 import { AnnotationLayer, type Tool } from "./AnnotationLayer";
+import { NoteBox } from "./NoteBox";
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
@@ -25,6 +27,7 @@ const TOOLS: { tool: Tool; label: string; title: string }[] = [
   { tool: "line", label: "╱", title: "Line" },
   { tool: "arrow", label: "↗", title: "Arrow" },
   { tool: "rect", label: "▭", title: "Rectangle" },
+  { tool: "note", label: "❏", title: "Sticky note" },
 ];
 const WIDTHS = [
   { w: 1, label: "S", title: "Thin" },
@@ -65,6 +68,7 @@ export function PageEditor({
   stamps,
   signatures,
   annots,
+  notes,
   formValues,
   onClose,
   onNavigate,
@@ -77,6 +81,9 @@ export function PageEditor({
   onAddAnnot,
   onUpdateAnnot,
   onDeleteAnnot,
+  onAddNote,
+  onUpdateNote,
+  onDeleteNote,
   onSetField,
 }: {
   pdfFor: (item: PageItem) => PDFDocumentProxy | undefined;
@@ -85,6 +92,7 @@ export function PageEditor({
   stamps: TextStamp[];
   signatures: SigPlacement[];
   annots: Annotation[];
+  notes: StickyNote[];
   formValues: Record<string, FieldValue>;
   onClose: () => void;
   onNavigate: (n: number) => void;
@@ -97,6 +105,9 @@ export function PageEditor({
   onAddAnnot: (a: Omit<Annotation, "id">) => void;
   onUpdateAnnot: (id: string, patch: Partial<Annotation>) => void;
   onDeleteAnnot: (id: string) => void;
+  onAddNote: (pageId: string, xNorm: number, yNorm: number) => void;
+  onUpdateNote: (id: string, patch: Partial<StickyNote>) => void;
+  onDeleteNote: (id: string) => void;
   onSetField: (name: string, value: FieldValue) => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -117,6 +128,7 @@ export function PageEditor({
   const pageStamps = stamps.filter((s) => s.pageId === item.id);
   const pageSigs = signatures.filter((s) => s.pageId === item.id);
   const pageAnnots = annots.filter((a) => a.pageId === item.id);
+  const pageNotes = notes.filter((n) => n.pageId === item.id);
 
   const pickTool = useCallback((t: Tool) => {
     setTool(t);
@@ -348,10 +360,23 @@ export function PageEditor({
           className={`editor-stage ${tool === "select" ? "" : "drawing"}`}
           ref={stageRef}
           onPointerDown={(e) => {
-            // A bare click on the page (no shape/stamp) clears the selection.
+            // Only react to a bare click on the page (not on a shape/stamp/note).
             const tag = (e.target as HTMLElement).tagName;
-            if (tag === "CANVAS" || e.target === e.currentTarget)
+            const onBlank = tag === "CANVAS" || e.target === e.currentTarget;
+            if (!onBlank) return;
+            if (tool === "note") {
+              const rect = stageRef.current?.getBoundingClientRect();
+              if (rect) {
+                onAddNote(
+                  item.id,
+                  clamp((e.clientX - rect.left) / rect.width, 0, 0.98),
+                  clamp((e.clientY - rect.top) / rect.height, 0, 0.98),
+                );
+                pickTool("select");
+              }
+            } else {
               setSelectedAnnot(null);
+            }
           }}
         >
           <canvas ref={canvasRef} className={ready ? "ready" : ""} />
@@ -404,6 +429,22 @@ export function PageEditor({
             onAdd={onAddAnnot}
             onUpdate={onUpdateAnnot}
           />
+          <div
+            className={`note-layer ${
+              tool !== "select" && tool !== "note" ? "drawing" : ""
+            }`}
+          >
+            {pageNotes.map((n) => (
+              <NoteBox
+                key={n.id}
+                note={n}
+                pxPerPt={pxPerPt}
+                stageRef={stageRef}
+                onUpdate={onUpdateNote}
+                onDelete={onDeleteNote}
+              />
+            ))}
+          </div>
         </div>
       </div>
 

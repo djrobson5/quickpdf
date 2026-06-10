@@ -80,6 +80,24 @@ export interface Annotation {
 }
 
 /**
+ * A sticky note: a colour-tinted comment card pinned to a page. Width is fixed
+ * (a fraction of the displayed page); height grows with the text, so the saved
+ * card always shows the whole comment.
+ */
+export interface StickyNote {
+  id: string;
+  pageId: string;
+  /** Top-left of the card, as fractions (0..1) of the displayed (upright) page. */
+  xNorm: number;
+  yNorm: number;
+  /** Card width as a fraction of the displayed page width. */
+  wNorm: number;
+  text: string;
+  /** Hex background tint, e.g. "#ffe27a". */
+  color: string;
+}
+
+/**
  * A single line of stamp text resolved to the page's *unrotated* PDF user space
  * (computed via pdf.js's viewport so rotation is handled exactly). This is what
  * the baker actually draws.
@@ -109,6 +127,20 @@ export interface BakedAnnot {
   color: string;
   pts: { x: number; y: number }[];
   width: number;
+}
+
+/**
+ * A sticky note resolved for drawing: an axis-aligned background rect (already
+ * in PDF space) plus its text as stamp-style lines (each anchor + rotation
+ * already resolved, so it bakes upright on /Rotate pages).
+ */
+export interface BakedNote {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  color: string;
+  lines: BakedLine[];
 }
 
 export function initialPages(srcId: string, numPages: number): PageItem[] {
@@ -270,6 +302,24 @@ function drawAnnots(pg: PDFPage, annots: BakedAnnot[]) {
   }
 }
 
+/** Draw sticky notes: the tinted card, then its (already-resolved) text lines. */
+function drawNotes(pg: PDFPage, notes: BakedNote[], font: PDFFont) {
+  for (const n of notes) {
+    pg.drawRectangle({
+      x: n.x,
+      y: n.y,
+      width: n.width,
+      height: n.height,
+      color: hexToRgb(n.color),
+      opacity: 0.92,
+      borderColor: rgb(0, 0, 0),
+      borderOpacity: 0.25,
+      borderWidth: 0.75,
+    });
+    drawLines(pg, n.lines, font);
+  }
+}
+
 async function assemble(
   sourceBytes: Map<string, Uint8Array>,
   pages: PageItem[],
@@ -277,6 +327,7 @@ async function assemble(
   formValuesBySrc: Map<string, Record<string, FieldValue>>,
   imagesByPage: Map<string, BakedImage[]>,
   annotsByPage: Map<string, BakedAnnot[]>,
+  notesByPage: Map<string, BakedNote[]>,
 ): Promise<Uint8Array> {
   const out = await PDFDocument.create();
   const font = await out.embedFont(StandardFonts.Helvetica);
@@ -286,7 +337,12 @@ async function assemble(
   // stamps/signatures drawn on them (so those overlays sit above field boxes).
   const flattenSrc = new Set<string>(formValuesBySrc.keys());
   for (const p of pages) {
-    if (linesByPage.has(p.id) || imagesByPage.has(p.id) || annotsByPage.has(p.id))
+    if (
+      linesByPage.has(p.id) ||
+      imagesByPage.has(p.id) ||
+      annotsByPage.has(p.id) ||
+      notesByPage.has(p.id)
+    )
       flattenSrc.add(p.srcId);
   }
 
@@ -329,6 +385,10 @@ async function assemble(
     // underlying text still shows through).
     const annots = annotsByPage.get(p.id);
     if (annots && annots.length) drawAnnots(pg, annots);
+
+    // Sticky notes sit above everything — they're comments meant to be seen.
+    const notes = notesByPage.get(p.id);
+    if (notes && notes.length) drawNotes(pg, notes, font);
   }
 
   return out.save();
@@ -341,6 +401,7 @@ export function buildPdf(
   formValuesBySrc: Map<string, Record<string, FieldValue>> = new Map(),
   imagesByPage: Map<string, BakedImage[]> = new Map(),
   annotsByPage: Map<string, BakedAnnot[]> = new Map(),
+  notesByPage: Map<string, BakedNote[]> = new Map(),
 ): Promise<Uint8Array> {
   return assemble(
     sourceBytes,
@@ -349,6 +410,7 @@ export function buildPdf(
     formValuesBySrc,
     imagesByPage,
     annotsByPage,
+    notesByPage,
   );
 }
 
@@ -386,6 +448,7 @@ export async function splitPdf(
   formValuesBySrc: Map<string, Record<string, FieldValue>> = new Map(),
   imagesByPage: Map<string, BakedImage[]> = new Map(),
   annotsByPage: Map<string, BakedAnnot[]> = new Map(),
+  notesByPage: Map<string, BakedNote[]> = new Map(),
 ): Promise<OutputFile[]> {
   const size = Math.max(1, Math.floor(chunkSize));
   const parts: OutputFile[] = [];
@@ -399,6 +462,7 @@ export async function splitPdf(
       formValuesBySrc,
       imagesByPage,
       annotsByPage,
+      notesByPage,
     );
     parts.push({ name: `${baseName}-${String(part).padStart(3, "0")}.pdf`, bytes });
     part++;
