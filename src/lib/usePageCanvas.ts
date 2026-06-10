@@ -2,7 +2,11 @@ import { useEffect, type RefObject } from "react";
 import type { PDFDocumentProxy } from "./pdfjs";
 
 export type Sizing =
-  | { mode: "thumb"; targetWidth: number; ss?: number }
+  // `fill`: display the canvas at 100% of its container (so an outer CSS width
+  // can scale it live) instead of a fixed targetWidth px.
+  | { mode: "thumb"; targetWidth: number; ss?: number; fill?: boolean }
+  // Renders to fit the window; the viewer then CSS-zooms via transform (so the
+  // canvas isn't re-rendered per zoom step), hence the supersample headroom.
   | { mode: "fit"; padW: number; padH: number };
 
 /**
@@ -43,8 +47,11 @@ export function usePageCanvas(
         const maxW = window.innerWidth - sizing.padW;
         const maxH = window.innerHeight - sizing.padH;
         const fit = Math.min(maxW / base.width, maxH / base.height);
-        scale = fit * dpr;
-        cssDivisor = dpr;
+        // Render 2× the fit size so a CSS transform can zoom up to ~2× while
+        // staying crisp, without re-rendering the canvas each zoom step.
+        const ss = 2;
+        scale = fit * dpr * ss;
+        cssDivisor = dpr * ss;
       }
 
       const viewport = page.getViewport({ scale, rotation: total });
@@ -55,8 +62,14 @@ export function usePageCanvas(
 
       canvas.width = Math.floor(viewport.width);
       canvas.height = Math.floor(viewport.height);
-      canvas.style.width = `${viewport.width / cssDivisor}px`;
-      canvas.style.height = `${viewport.height / cssDivisor}px`;
+      if (sizing.mode === "thumb" && sizing.fill) {
+        // Let an outer container's width drive the display size (live resize).
+        canvas.style.width = "100%";
+        canvas.style.height = "auto";
+      } else {
+        canvas.style.width = `${viewport.width / cssDivisor}px`;
+        canvas.style.height = `${viewport.height / cssDivisor}px`;
+      }
 
       task = page.render({ canvas, canvasContext: ctx, viewport });
       try {
@@ -71,6 +84,7 @@ export function usePageCanvas(
       cancelled = true;
       task?.cancel();
     };
+    // Zoom (fit) and thumb size are both CSS-driven now, so no re-render needed.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pdf, srcIndex, rotation]);
 }

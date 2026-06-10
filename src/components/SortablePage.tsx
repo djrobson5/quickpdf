@@ -50,7 +50,7 @@ export function SortablePage({
     pdf,
     item.srcIndex,
     item.rotation,
-    { mode: "thumb", targetWidth: 220 },
+    { mode: "thumb", targetWidth: 240, fill: true },
     setReady,
   );
 

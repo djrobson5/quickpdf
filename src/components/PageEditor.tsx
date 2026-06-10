@@ -112,6 +112,7 @@ export function PageEditor({
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
+  const viewerStageRef = useRef<HTMLDivElement>(null);
   const [ready, setReady] = useState(false);
   const [stageW, setStageW] = useState(0);
   const [stageH, setStageH] = useState(0);
@@ -122,6 +123,8 @@ export function PageEditor({
   const [annotColor, setAnnotColor] = useState("#ef4444");
   const [annotWidth, setAnnotWidth] = useState(2);
   const [selectedAnnot, setSelectedAnnot] = useState<string | null>(null);
+  const [zoom, setZoom] = useState(1); // CSS-transform zoom (1 = fit)
+  const [pan, setPan] = useState({ x: 0, y: 0 }); // screen-px offset when zoomed
 
   const item = pages[index];
   const pdf = pdfFor(item);
@@ -192,8 +195,11 @@ export function PageEditor({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose, goPrev, goNext, tool, selectedAnnot, pickTool, removeSelectedAnnot]);
 
-  // Selecting a markup is per-page; drop the selection when the page changes.
-  useEffect(() => setSelectedAnnot(null), [index]);
+  // Per-page state resets when the page changes.
+  useEffect(() => {
+    setSelectedAnnot(null);
+    setPan({ x: 0, y: 0 });
+  }, [index]);
 
   usePageCanvas(
     canvasRef,
@@ -203,6 +209,44 @@ export function PageEditor({
     { mode: "fit", padW: 160, padH: 150 },
     setReady,
   );
+
+  const zoomBy = useCallback(
+    (factor: number) => setZoom((z) => clamp(z * factor, 0.25, 4)),
+    [],
+  );
+
+  // Scroll-to-zoom in the viewer: any wheel — two-finger scroll, touchpad pinch
+  // (which on Windows arrives as a plain scroll, no ctrl flag), or Ctrl+wheel —
+  // zooms the page. Native non-passive listener so we can preventDefault the
+  // page scroll. Pan a zoomed page with the scrollbars.
+  useEffect(() => {
+    const el = viewerStageRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      setZoom((z) => clamp(z * Math.exp(-e.deltaY * 0.002), 0.25, 4));
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, []);
+
+  // Keep a panned, zoomed page from being dragged entirely out of view.
+  const clampPan = useCallback(
+    (p: { x: number; y: number }) => {
+      const vw = viewerStageRef.current?.clientWidth ?? 0;
+      const vh = viewerStageRef.current?.clientHeight ?? 0;
+      const maxX = Math.max(0, (stageW * zoom - vw) / 2 + 24);
+      const maxY = Math.max(0, (stageH * zoom - vh) / 2 + 24);
+      return { x: clamp(p.x, -maxX, maxX), y: clamp(p.y, -maxY, maxY) };
+    },
+    [stageW, stageH, zoom],
+  );
+
+  // Recenter at fit; otherwise keep the pan within bounds as the zoom changes.
+  useEffect(() => {
+    if (zoom <= 1.001) setPan({ x: 0, y: 0 });
+    else setPan((p) => clampPan(p));
+  }, [zoom, clampPan]);
 
   // Once rendered, measure the displayed canvas width and the displayed page
   // width in points so we can scale stamp font sizes accurately.
@@ -355,12 +399,20 @@ export function PageEditor({
         ‹
       </button>
 
-      <div className="viewer-stage" onClick={(e) => e.stopPropagation()}>
+      <div
+        className="viewer-stage"
+        ref={viewerStageRef}
+        onClick={(e) => e.stopPropagation()}
+      >
         <div
           className={`editor-stage ${tool === "select" ? "" : "drawing"}`}
           ref={stageRef}
+          style={{
+            transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+            cursor: zoom > 1.001 && tool === "select" ? "grab" : undefined,
+          }}
           onPointerDown={(e) => {
-            // Only react to a bare click on the page (not on a shape/stamp/note).
+            // Only react to a bare press on the page (not on a shape/stamp/note).
             const tag = (e.target as HTMLElement).tagName;
             const onBlank = tag === "CANVAS" || e.target === e.currentTarget;
             if (!onBlank) return;
@@ -374,6 +426,31 @@ export function PageEditor({
                 );
                 pickTool("select");
               }
+              return;
+            }
+            // Select mode: drag to pan a zoomed page; a plain click deselects.
+            if (zoom > 1.001) {
+              const sx = e.clientX;
+              const sy = e.clientY;
+              const start = { ...pan };
+              let moved = false;
+              const move = (ev: PointerEvent) => {
+                if (Math.abs(ev.clientX - sx) + Math.abs(ev.clientY - sy) > 3)
+                  moved = true;
+                setPan(
+                  clampPan({
+                    x: start.x + (ev.clientX - sx),
+                    y: start.y + (ev.clientY - sy),
+                  }),
+                );
+              };
+              const up = () => {
+                window.removeEventListener("pointermove", move);
+                window.removeEventListener("pointerup", up);
+                if (!moved) setSelectedAnnot(null);
+              };
+              window.addEventListener("pointermove", move);
+              window.addEventListener("pointerup", up);
             } else {
               setSelectedAnnot(null);
             }
@@ -459,6 +536,32 @@ export function PageEditor({
       >
         ›
       </button>
+
+      <div className="viewer-zoom" onClick={(e) => e.stopPropagation()}>
+        <button
+          className="vz-btn"
+          onClick={() => zoomBy(1 / 1.25)}
+          disabled={zoom <= 0.25}
+          title="Zoom out"
+        >
+          −
+        </button>
+        <button
+          className="vz-pct"
+          onClick={() => setZoom(1)}
+          title="Reset to fit"
+        >
+          {Math.round(zoom * 100)}%
+        </button>
+        <button
+          className="vz-btn"
+          onClick={() => zoomBy(1.25)}
+          disabled={zoom >= 4}
+          title="Zoom in"
+        >
+          +
+        </button>
+      </div>
       </div>
 
       {showSig && (

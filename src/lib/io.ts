@@ -8,6 +8,8 @@ import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialo
 export interface LoadedFile {
   name: string;
   bytes: Uint8Array;
+  /** Absolute source path when opened from disk (Tauri); undefined in browser. */
+  path?: string;
 }
 
 function baseName(p: string): string {
@@ -18,7 +20,15 @@ function baseName(p: string): string {
 /** Read a PDF from an absolute path (used when the OS opens a file with us). */
 export async function readPdfPath(path: string): Promise<LoadedFile> {
   const data = await invoke<ArrayBuffer>("read_file", { path });
-  return { name: baseName(path), bytes: new Uint8Array(data) };
+  return { name: baseName(path), bytes: new Uint8Array(data), path };
+}
+
+/** Overwrite a file at a known absolute path (no dialog). Tauri only. */
+export async function writePdfPath(
+  path: string,
+  bytes: Uint8Array,
+): Promise<void> {
+  await invoke("write_file", { path, contents: Array.from(bytes) });
 }
 
 /** Prompt the user to pick one or more PDFs; returns their bytes (or []). */
@@ -33,7 +43,7 @@ export async function openPdfs(): Promise<LoadedFile[]> {
     const out: LoadedFile[] = [];
     for (const p of paths) {
       const data = await invoke<ArrayBuffer>("read_file", { path: p });
-      out.push({ name: baseName(p), bytes: new Uint8Array(data) });
+      out.push({ name: baseName(p), bytes: new Uint8Array(data), path: p });
     }
     return out;
   }

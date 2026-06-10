@@ -25,12 +25,14 @@ import {
   savePdf,
   saveMany,
   readPdfPath,
+  writePdfPath,
   type LoadedFile,
 } from "./lib/io";
 import {
   buildPdf,
   splitPdf,
   imageToPdfPage,
+  blankPdfPage,
   initialPages,
   type PageItem,
   type TextStamp,
@@ -44,6 +46,12 @@ import {
   type BakedNote,
 } from "./lib/pdfEdit";
 import { dataUrlToBytes, imageSize } from "./lib/signatures";
+import {
+  getRecents,
+  addRecent,
+  removeRecent,
+  type RecentFile,
+} from "./lib/recents";
 import {
   GROUP_COLORS,
   groupColor as resolveGroupColor,
@@ -63,6 +71,8 @@ interface SourceDoc {
   bytes: Uint8Array;
   pdf: PDFDocumentProxy;
   numPages: number;
+  /** Absolute path it was opened from (Tauri) — enables Save-in-place. */
+  path?: string;
 }
 
 export default function App() {
@@ -72,6 +82,8 @@ export default function App() {
   const [sigs, setSigs] = useState<SigPlacement[]>([]);
   const [annots, setAnnots] = useState<Annotation[]>([]);
   const [notes, setNotes] = useState<StickyNote[]>([]);
+  const [thumbSize, setThumbSize] = useState(190); // page-grid thumbnail width (px)
+  const [recents, setRecents] = useState<RecentFile[]>(() => getRecents());
   const [formValues, setFormValues] = useState<
     Record<string, Record<string, FieldValue>>
   >({});
@@ -189,6 +201,7 @@ export default function App() {
       bytes: file.bytes,
       pdf,
       numPages: pdf.numPages,
+      path: file.path,
     };
   }, []);
 
@@ -212,6 +225,13 @@ export default function App() {
         setNotes([]);
         setFormValues({});
         setDirty(files.length > 1);
+        let touched = false;
+        for (const f of files)
+          if (f.path) {
+            addRecent({ path: f.path, name: f.name });
+            touched = true;
+          }
+        if (touched) setRecents(getRecents());
       } catch (e) {
         setError(`Could not open: ${String(e)}`);
         setSources([]);
@@ -221,6 +241,19 @@ export default function App() {
       }
     },
     [makeSource],
+  );
+
+  // Reopen a file from the recents list (drop it if it no longer opens).
+  const openRecent = useCallback(
+    async (path: string) => {
+      try {
+        await loadAsNew([await readPdfPath(path)]);
+      } catch (e) {
+        setError(`Could not open (moved or deleted?): ${String(e)}`);
+        setRecents(removeRecent(path));
+      }
+    },
+    [loadAsNew],
   );
 
   const addFiles = useCallback(
@@ -831,9 +864,63 @@ export default function App() {
     setPages((prev) => prev.filter((p) => !selected.has(p.id)));
     setStamps((prev) => prev.filter((s) => !selected.has(s.pageId)));
     setSigs((prev) => prev.filter((s) => !selected.has(s.pageId)));
+    setAnnots((prev) => prev.filter((a) => !selected.has(a.pageId)));
+    setNotes((prev) => prev.filter((n) => !selected.has(n.pageId)));
     setSelected(new Set());
     setDirty(true);
   }, [selected, pages.length, flash]);
+
+  // Duplicate each selected page in place (right after its original), carrying
+  // its overlays (stamps/signatures/markup/notes) onto the copy.
+  const duplicateSelected = useCallback(() => {
+    if (!selected.size) return;
+    const idMap = new Map<string, string>();
+    const next: PageItem[] = [];
+    for (const p of pages) {
+      next.push(p);
+      if (selected.has(p.id)) {
+        const nid = crypto.randomUUID();
+        idMap.set(p.id, nid);
+        next.push({ ...p, id: nid });
+      }
+    }
+    const cloneOnto = <T extends { id: string; pageId: string }>(arr: T[]): T[] =>
+      arr.flatMap((o) => {
+        const nid = idMap.get(o.pageId);
+        return nid
+          ? [o, { ...o, id: crypto.randomUUID(), pageId: nid }]
+          : [o];
+      });
+    setPages(next);
+    setStamps(cloneOnto);
+    setSigs(cloneOnto);
+    setAnnots(cloneOnto);
+    setNotes(cloneOnto);
+    setDirty(true);
+    flash(`Duplicated ${selected.size} page${selected.size === 1 ? "" : "s"}.`);
+  }, [pages, selected, flash]);
+
+  // Insert a blank page after the last selected page (or at the end).
+  const insertBlankPage = useCallback(async () => {
+    try {
+      const src = await makeSource({ name: "Blank", bytes: await blankPdfPage() });
+      const blank = initialPages(src.id, 1)[0];
+      setSources((prev) => [...prev, src]);
+      setPages((prev) => {
+        let at = prev.length;
+        prev.forEach((p, i) => {
+          if (selected.has(p.id)) at = i + 1;
+        });
+        const next = [...prev];
+        next.splice(at, 0, blank);
+        return next;
+      });
+      setDirty(true);
+      flash("Inserted a blank page.");
+    } catch (e) {
+      setError(`Could not insert page: ${String(e)}`);
+    }
+  }, [makeSource, selected, flash]);
 
   // ----- Page groups (color tags; purely an organizing aid) -----
   // Active groups, in palette order, with their live page counts and labels.
@@ -921,6 +1008,10 @@ export default function App() {
   );
 
   // ----- Save / Extract / Split -----
+  // Save-in-place target: only when a single file is open and we know its path
+  // (a merged doc or a browser session has none → Save As).
+  const savePath = sources.length === 1 ? sources[0].path ?? null : null;
+
   const handleSave = useCallback(async () => {
     if (!pages.length) return;
     setBusy(true);
@@ -942,6 +1033,29 @@ export default function App() {
       setBusy(false);
     }
   }, [pages, bytesById, bakeStamps, bakeSignatures, bakeAnnots, bakeNotes, formMap, baseName, flash]);
+
+  // Overwrite the original file in place (only when a single file is open and
+  // we know its path); otherwise fall back to Save As.
+  const handleSaveInPlace = useCallback(async () => {
+    if (!savePath) return handleSave();
+    if (!pages.length) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const baked = await bakeStamps();
+      const sigMap = await bakeSignatures();
+      const annotMap = await bakeAnnots();
+      const noteMap = await bakeNotes();
+      const bytes = await buildPdf(bytesById, pages, baked, formMap, sigMap, annotMap, noteMap);
+      await writePdfPath(savePath, bytes);
+      setDirty(false);
+      flash("Saved.");
+    } catch (e) {
+      setError(`Save failed: ${String(e)}`);
+    } finally {
+      setBusy(false);
+    }
+  }, [savePath, pages, bytesById, bakeStamps, bakeSignatures, bakeAnnots, bakeNotes, formMap, handleSave, flash]);
 
   const extractSelected = useCallback(async () => {
     const chosen = pages.filter((p) => selected.has(p.id));
@@ -1127,7 +1241,7 @@ export default function App() {
       if (!hasDoc) return;
       if (mod && k === "s") {
         e.preventDefault();
-        handleSave();
+        handleSaveInPlace();
         return;
       }
       if (preview !== null || typing) return; // editor handles its own keys
@@ -1150,7 +1264,7 @@ export default function App() {
     preview,
     selCount,
     handleOpen,
-    handleSave,
+    handleSaveInPlace,
     selectAll,
     deleteSelected,
     clearSelect,
@@ -1213,9 +1327,42 @@ export default function App() {
               >
                 Add image
               </button>
-              <button className="btn accent" onClick={handleSave} disabled={busy}>
-                {busy ? "Working…" : "Save As…"}
+              <button
+                className="btn"
+                onClick={insertBlankPage}
+                title="Insert a blank page (after the selection, or at the end)"
+              >
+                Add blank
               </button>
+              {savePath ? (
+                <>
+                  <button
+                    className="btn accent"
+                    onClick={handleSaveInPlace}
+                    disabled={busy}
+                    title="Overwrite the original file (Ctrl+S)"
+                  >
+                    {busy ? "Working…" : "Save"}
+                  </button>
+                  <button
+                    className="btn"
+                    onClick={handleSave}
+                    disabled={busy}
+                    title="Save as a new file"
+                  >
+                    Save As…
+                  </button>
+                </>
+              ) : (
+                <button
+                  className="btn accent"
+                  onClick={handleSave}
+                  disabled={busy}
+                  title="Save as a new file"
+                >
+                  {busy ? "Working…" : "Save As…"}
+                </button>
+              )}
               <button
                 className="btn"
                 onClick={() => setShowSplit(true)}
@@ -1280,6 +1427,9 @@ export default function App() {
               <button className="btn sm" onClick={rotateSelected} disabled={busy}>
                 Rotate
               </button>
+              <button className="btn sm" onClick={duplicateSelected} disabled={busy}>
+                Duplicate
+              </button>
               <button className="btn sm danger" onClick={deleteSelected} disabled={busy}>
                 Delete
               </button>
@@ -1321,6 +1471,20 @@ export default function App() {
               selection with a color group · drag a page to reorder
             </span>
           )}
+          <label className="thumb-zoom" title="Thumbnail size">
+            <span className="thumb-zoom-ico" aria-hidden>
+              ▦
+            </span>
+            <input
+              type="range"
+              min={110}
+              max={340}
+              step={10}
+              value={thumbSize}
+              onChange={(e) => setThumbSize(Number(e.target.value))}
+              aria-label="Thumbnail size"
+            />
+          </label>
         </div>
       )}
 
@@ -1348,6 +1512,33 @@ export default function App() {
               <button className="btn primary lg" onClick={handleOpen}>
                 Choose PDF(s)
               </button>
+              {recents.length > 0 && (
+                <div className="recents">
+                  <div className="recents-title">Recent</div>
+                  <ul className="recents-list">
+                    {recents.map((r) => (
+                      <li key={r.path} className="recent-row">
+                        <button
+                          className="recent-item"
+                          onClick={() => openRecent(r.path)}
+                          title={r.path}
+                        >
+                          <span className="recent-name">{r.name}</span>
+                          <span className="recent-path">{r.path}</span>
+                        </button>
+                        <button
+                          className="recent-x"
+                          onClick={() => setRecents(removeRecent(r.path))}
+                          title="Remove from recents"
+                          aria-label="Remove from recents"
+                        >
+                          ✕
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -1367,7 +1558,11 @@ export default function App() {
               items={pages.map((p) => p.id)}
               strategy={sortStrategy}
             >
-              <div className="page-grid" ref={gridRef}>
+              <div
+                className="page-grid"
+                ref={gridRef}
+                style={{ "--thumb-w": `${thumbSize}px` } as React.CSSProperties}
+              >
                 {pages.map((item, i) => {
                   const pdf = sourceById.get(item.srcId)?.pdf;
                   if (!pdf) return null;

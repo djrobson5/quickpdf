@@ -234,12 +234,31 @@ body {
 /* ---------- Page grid ---------- */
 .page-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(var(--thumb-w, 190px), 1fr));
   gap: 20px;
   padding: 24px;
   align-items: start;
   /* Keep page numbers from being text-selected while drawing a marquee. */
   user-select: none;
+}
+
+/* Thumbnail-size slider (lives at the right of the subbar). */
+.thumb-zoom {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-dim);
+}
+
+.thumb-zoom-ico {
+  font-size: 13px;
+  line-height: 1;
+}
+
+.thumb-zoom input[type="range"] {
+  width: 110px;
+  cursor: pointer;
 }
 
 /* Rubber-band selection rectangle (drawn in viewport coords, so position: fixed). */
@@ -262,6 +281,7 @@ body {
 
 .thumb-canvas {
   position: relative;
+  width: var(--thumb-w, 190px);
   background: #fff;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -691,12 +711,14 @@ body {
 }
 
 .viewer-stage {
-  max-width: calc(100vw - 140px);
-  max-height: calc(100vh - 90px);
-  margin-top: 36px;
+  /* Fill the window below the top bar so a zoomed page can use the whole space
+     (the page renders centred via .editor-stage's auto margins). */
+  position: absolute;
+  inset: 52px 0 0 0;
   display: flex;
-  align-items: center;
-  justify-content: center;
+  /* Zoom is a CSS transform and pan is drag, so the stage itself never scrolls
+     (avoids the scroll/zoom fight). Overflow is clipped; drag to see edges. */
+  overflow: hidden;
 }
 
 .viewer-stage canvas {
@@ -716,6 +738,8 @@ body {
   position: absolute;
   top: 50%;
   transform: translateY(-50%);
+  /* Above the full-window viewer-stage so the arrows stay clickable. */
+  z-index: 3;
   width: 48px;
   height: 72px;
   display: flex;
@@ -746,6 +770,55 @@ body {
 
 .viewer-nav.right {
   right: 18px;
+}
+
+/* Floating zoom control (bottom-centre of the large viewer). */
+.viewer-zoom {
+  position: absolute;
+  bottom: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  background: rgba(28, 29, 33, 0.92);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  backdrop-filter: blur(4px);
+  z-index: 2;
+}
+
+.vz-btn,
+.vz-pct {
+  height: 28px;
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.vz-btn {
+  width: 30px;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.vz-pct {
+  min-width: 52px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.vz-btn:hover:not(:disabled),
+.vz-pct:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.vz-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
 }
 
 /* ---------- M2: page management chrome ---------- */
@@ -1013,6 +1086,7 @@ body {
 .editor-stage {
   position: relative;
   line-height: 0;
+  margin: auto; /* center within the viewer-stage; transform handles zoom/pan */
 }
 
 .stamp-layer {
@@ -1636,4 +1710,89 @@ select.ff-input {
 .notebox:hover .notebox-resize,
 .notebox:focus-within .notebox-resize {
   opacity: 1;
+}
+
+/* Recent files (on the empty state) */
+.recents {
+  margin-top: 30px;
+  width: 100%;
+  max-width: 460px;
+  text-align: left;
+}
+
+.recents-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+  margin-bottom: 8px;
+}
+
+.recents-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.recent-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.recent-item {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  padding: 7px 10px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+.recent-item:hover {
+  background: rgba(38, 171, 226, 0.1);
+  border-color: var(--accent);
+}
+
+.recent-name,
+.recent-path {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recent-name {
+  font-size: 13px;
+  color: var(--text);
+}
+
+.recent-path {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.recent-x {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.recent-x:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
 }

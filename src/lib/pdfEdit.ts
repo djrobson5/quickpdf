@@ -439,6 +439,16 @@ export async function imageToPdfPage(bytes: Uint8Array): Promise<Uint8Array> {
   return doc.save();
 }
 
+/** A one-page blank PDF (US Letter portrait by default) to insert as a page. */
+export async function blankPdfPage(
+  width = 612,
+  height = 792,
+): Promise<Uint8Array> {
+  const doc = await PDFDocument.create();
+  doc.addPage([width, height]);
+  return doc.save();
+}
+
 export async function splitPdf(
   sourceBytes: Map<string, Uint8Array>,
   pages: PageItem[],
