@@ -15,6 +15,11 @@ export function SortablePage({
   onRotate,
   onDelete,
   onToggleSelect,
+  groupColor,
+  groupLabel,
+  dragGhost,
+  dragLifted,
+  dropEdge,
 }: {
   pdf: PDFDocumentProxy;
   item: PageItem;
@@ -24,7 +29,16 @@ export function SortablePage({
   onOpen: () => void;
   onRotate: () => void;
   onDelete: () => void;
-  onToggleSelect: (additive: boolean) => void;
+  onToggleSelect: () => void;
+  groupColor?: string;
+  groupLabel?: string;
+  /** This selected page rides along with another being dragged (ghost it). */
+  dragGhost?: boolean;
+  /** This is the grabbed page during a multi-drag (shown in the overlay pile,
+   *  so its in-place copy is held still and faded). */
+  dragLifted?: boolean;
+  /** A multi-page block will be inserted on this edge of the page. */
+  dropEdge?: "left" | "right";
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [ready, setReady] = useState(false);
@@ -43,27 +57,42 @@ export function SortablePage({
   return (
     <div
       ref={setNodeRef}
-      className={`thumb ${isDragging ? "dragging" : ""} ${
+      data-page-id={item.id}
+      data-group={item.group || undefined}
+      className={`thumb ${isDragging && !dragLifted ? "dragging" : ""} ${
         selected ? "selected" : ""
-      }`}
-      style={{ transform: CSS.Transform.toString(transform), transition }}
+      } ${dragGhost ? "ghost" : ""} ${dragLifted ? "lifted" : ""}`}
+      style={
+        {
+          // The lifted page is shown in the drag overlay, so keep its in-place
+          // copy still (ignore the drag transform) and let CSS fade it.
+          transform: dragLifted ? undefined : CSS.Transform.toString(transform),
+          transition,
+          "--group-color": groupColor,
+        } as React.CSSProperties
+      }
     >
       <div className="thumb-canvas">
         <canvas ref={canvasRef} className={ready ? "ready" : ""} />
         {!ready && <div className="thumb-skeleton" />}
+        {groupColor && <div className="thumb-group-strip" />}
 
-        {/* Drag handle covers the page; a click (no drag) opens the viewer. */}
+        {/* Drag handle covers the page. A plain click opens the viewer;
+            Ctrl/⌘-click toggles selection instead. Drag still reorders. */}
         <button
           className="thumb-surface"
           {...attributes}
           {...listeners}
-          onClick={onOpen}
-          title={`Page ${position} — drag to reorder, click to view`}
+          onClick={(e) => {
+            if (e.ctrlKey || e.metaKey) onToggleSelect();
+            else onOpen();
+          }}
+          title={`Page ${position} — click to view, Ctrl-click to select, drag to reorder`}
         />
 
         <button
           className={`thumb-check ${selected ? "on" : ""}`}
-          onClick={(e) => onToggleSelect(e.shiftKey || e.ctrlKey || e.metaKey)}
+          onClick={onToggleSelect}
           title={selected ? "Deselect" : "Select"}
           aria-label="Select page"
         >
@@ -90,7 +119,17 @@ export function SortablePage({
           </button>
         </div>
       </div>
-      <div className="thumb-label">{position}</div>
+      <div className="thumb-label">
+        <span className="thumb-num">{position}</span>
+        {groupLabel && (
+          <span className="thumb-group-pill" title={`Group: ${groupLabel}`}>
+            {groupLabel}
+          </span>
+        )}
+      </div>
+      {/* Insertion marker for a multi-page drop. Lives outside .thumb-canvas
+          (which clips overflow) so it can sit in the gap between pages. */}
+      {dropEdge && <div className={`thumb-drop-edge ${dropEdge}`} />}
     </div>
   );
 }

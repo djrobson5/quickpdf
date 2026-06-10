@@ -238,9 +238,22 @@ body {
   gap: 20px;
   padding: 24px;
   align-items: start;
+  /* Keep page numbers from being text-selected while drawing a marquee. */
+  user-select: none;
+}
+
+/* Rubber-band selection rectangle (drawn in viewport coords, so position: fixed). */
+.marquee {
+  position: fixed;
+  z-index: 50;
+  border: 1px solid var(--accent);
+  background: rgba(38, 171, 226, 0.18);
+  border-radius: 2px;
+  pointer-events: none;
 }
 
 .thumb {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -395,9 +408,215 @@ body {
 }
 
 .thumb-label {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  max-width: 100%;
   font-size: 12px;
   color: var(--text-dim);
   font-variant-numeric: tabular-nums;
+}
+
+/* ---------- Page groups (color tags) ---------- */
+
+/* Colored bar across the top of a grouped thumbnail, plus a tinted border. */
+.thumb-group-strip {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 5px;
+  background: var(--group-color);
+  z-index: 3;
+  pointer-events: none;
+}
+
+/* Placed after .thumb.selected / .thumb:hover so the group color wins the
+   border; selection still shows via its accent glow (box-shadow). */
+.thumb[data-group] .thumb-canvas {
+  border-color: var(--group-color);
+}
+
+.thumb-group-pill {
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #fff;
+  background: var(--group-color);
+}
+
+/* Swatches in the selection sub-bar (assign / clear group). */
+.subbar-sep {
+  width: 1px;
+  height: 20px;
+  background: var(--border-strong);
+  opacity: 0.5;
+  margin: 0 4px;
+}
+
+.group-assign {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.group-assign-label {
+  color: var(--text-dim);
+  margin-right: 2px;
+}
+
+.group-swatch {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  padding: 0;
+  cursor: pointer;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18);
+  transition: transform 0.1s ease, border-color 0.1s ease;
+}
+
+.group-swatch:hover {
+  transform: scale(1.18);
+}
+
+.group-swatch.active {
+  border-color: #fff;
+}
+
+.group-swatch.clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-elev-2);
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1;
+  box-shadow: none;
+  border: 1px solid var(--border-strong);
+}
+
+.group-swatch.clear:hover {
+  color: var(--text);
+}
+
+/* Legend bar: one chip per active group. */
+.group-legend {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 7px 24px;
+  min-height: 42px;
+  font-size: 12px;
+  background: var(--bg-elev);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.group-legend-label {
+  color: var(--text-dim);
+  font-weight: 600;
+}
+
+.group-legend-spacer {
+  flex: 1;
+}
+
+.group-chip {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--bg-elev-2);
+  overflow: hidden;
+}
+
+.group-chip-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 4px 3px 9px;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+}
+
+.group-chip-main:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.group-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--group-color);
+  flex-shrink: 0;
+}
+
+.group-name {
+  font-weight: 600;
+}
+
+.group-count {
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.group-name-input {
+  font: inherit;
+  font-weight: 600;
+  width: 96px;
+  margin: 2px 6px;
+  padding: 2px 6px;
+  background: var(--bg);
+  border: 1px solid var(--accent);
+  border-radius: 5px;
+  color: var(--text);
+}
+
+.group-chip-tools {
+  display: none;
+  align-items: center;
+  gap: 1px;
+  padding-right: 3px;
+}
+
+.group-chip:hover .group-chip-tools {
+  display: inline-flex;
+}
+
+.group-tool {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+}
+
+.group-tool:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text);
+}
+
+.group-tool.danger:hover {
+  background: rgba(255, 92, 92, 0.2);
+  color: #ffb3b3;
 }
 
 /* ---------- Drag overlay ---------- */
@@ -549,6 +768,113 @@ body {
 .thumb.dragging .thumb-canvas {
   border-color: var(--accent);
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.65);
+}
+
+/* Selected pages during a multi-page drag: the others ghost in place, the
+   grabbed one (shown in the floating pile) is held still and faded. */
+.thumb.ghost .thumb-canvas,
+.thumb.lifted .thumb-canvas {
+  opacity: 0.4;
+  border-style: dashed;
+}
+
+.thumb.lifted .thumb-canvas {
+  box-shadow: var(--shadow);
+}
+
+/* Insertion bar: where a dragged block will land, in the gap beside a page.
+   Anchored to .thumb (not .thumb-canvas, which clips its overflow). */
+.thumb-drop-edge {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  border-radius: 3px;
+  background: var(--accent);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.3),
+    0 0 14px 3px rgba(38, 171, 226, 0.95);
+  z-index: 12;
+  pointer-events: none;
+  animation: dropPulse 0.9s ease-in-out infinite;
+}
+
+.thumb-drop-edge.left {
+  left: -13px;
+}
+
+.thumb-drop-edge.right {
+  right: -13px;
+}
+
+@keyframes dropPulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+/* Floating pile shown under the cursor while dragging a multi-page selection. */
+.drag-pile {
+  position: relative;
+  width: 150px;
+  pointer-events: none;
+  filter: drop-shadow(0 14px 28px rgba(0, 0, 0, 0.6));
+}
+
+.drag-pile-card {
+  position: absolute;
+  inset: 0;
+  background: #fff;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+}
+
+.drag-pile-card.c1 {
+  transform: rotate(-3deg) translate(-5px, 3px);
+}
+
+.drag-pile-card.c2 {
+  transform: rotate(4deg) translate(6px, 7px);
+}
+
+.drag-pile-top {
+  position: relative;
+  background: #fff;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.drag-pile-top canvas {
+  display: block;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.drag-pile-top canvas.ready {
+  opacity: 1;
+}
+
+.drag-pile-badge {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  min-width: 24px;
+  height: 24px;
+  padding: 0 7px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.5);
 }
 
 .dirty-dot {

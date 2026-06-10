@@ -34,7 +34,8 @@ files never leave your machine.
 ## Features
 
 - **Open & view** — open PDFs (button or drag-drop), every page as a crisp thumbnail, click any page for a large viewer with an **Enhance** contrast toggle for faint scans
-- **Page management** — drag-to-reorder, rotate, delete, multi-select
+- **Page management** — drag-to-reorder (single page or a whole multi-select block), rotate, delete; box-select with a marquee, or click + Ctrl-click
+- **Page groups** — tag pages with color groups (an organizing aid that never changes the saved file): select, rename, gather, or move a group as a block, and export each group as its own PDF
 - **Merge / Split / Extract** — combine multiple PDFs (open or drag several), extract selected pages to a new PDF, split into a folder of files
 - **Text & forms** — stamp text anywhere + auto-detect & fill real AcroForm fields (text, checkbox, radio, dropdown), flattened on save
 - **Signatures** — draw (with a trackpad **glide mode**) / upload / reusable saved library; place, drag, resize; baked in on save

@@ -19,6 +19,8 @@ export interface PageItem {
   srcId: string;
   srcIndex: number;
   rotation: number;
+  /** Optional color-group id (UI organizing aid only; see lib/groups). */
+  group?: string;
 }
 
 /** A piece of free-placed text stamped onto a page (UI/state form). */

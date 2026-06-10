@@ -1,18 +1,22 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
   DndContext,
+  DragOverlay,
   PointerSensor,
   closestCenter,
   useSensor,
   useSensors,
   type DragEndEvent,
+  type DragOverEvent,
+  type DragStartEvent,
 } from "@dnd-kit/core";
 import {
   SortableContext,
   arrayMove,
   rectSortingStrategy,
+  type SortingStrategy,
 } from "@dnd-kit/sortable";
 import { loadPdfDocument, type PDFDocumentProxy } from "./lib/pdfjs";
 import {
@@ -36,9 +40,16 @@ import {
   type SigPlacement,
 } from "./lib/pdfEdit";
 import { dataUrlToBytes, imageSize } from "./lib/signatures";
+import {
+  GROUP_COLORS,
+  groupColor as resolveGroupColor,
+  groupDefaultName,
+} from "./lib/groups";
 import { SortablePage } from "./components/SortablePage";
+import { DragPreview } from "./components/DragPreview";
 import { PageEditor } from "./components/PageEditor";
 import { SplitDialog } from "./components/SplitDialog";
+import { GroupLegend } from "./components/GroupLegend";
 import logoUrl from "./assets/quickpdf-logo.svg";
 import "./App.css";
 
@@ -59,6 +70,23 @@ export default function App() {
     Record<string, Record<string, FieldValue>>
   >({});
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [marquee, setMarquee] = useState<{
+    x0: number;
+    y0: number;
+    x1: number;
+    y1: number;
+  } | null>(null);
+  const gridRef = useRef<HTMLDivElement>(null);
+  const [groupNames, setGroupNames] = useState<Record<string, string>>({});
+  const [activeDragId, setActiveDragId] = useState<string | null>(null);
+  // True for the duration of a drag that moves a multi-page selection. A ref so
+  // the (stable) sorting strategy can read it without re-subscribing mid-drag.
+  const multiDragRef = useRef(false);
+  // Where a multi-page block will land: the page to mark, and which edge.
+  const [dropIndicator, setDropIndicator] = useState<{
+    id: string;
+    before: boolean;
+  } | null>(null);
   const [dirty, setDirty] = useState(false);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -169,6 +197,7 @@ export default function App() {
         setSources(srcs);
         setPages(srcs.flatMap((s) => initialPages(s.id, s.numPages)));
         setSelected(new Set());
+        setGroupNames({});
         setDirty(files.length > 1);
       } catch (e) {
         setError(`Could not open: ${String(e)}`);
@@ -427,17 +456,84 @@ export default function App() {
     return out;
   }, [sigs, pageById, sourceById]);
 
-  const onDragEnd = useCallback((e: DragEndEvent) => {
-    const { active, over } = e;
-    if (!over || active.id === over.id) return;
-    setPages((prev) => {
-      const from = prev.findIndex((p) => p.id === active.id);
-      const to = prev.findIndex((p) => p.id === over.id);
-      if (from < 0 || to < 0) return prev;
-      return arrayMove(prev, from, to);
-    });
-    setDirty(true);
+  const onDragStart = useCallback(
+    (e: DragStartEvent) => {
+      const activeId = String(e.active.id);
+      multiDragRef.current = selected.has(activeId) && selected.size > 1;
+      setActiveDragId(activeId);
+    },
+    [selected],
+  );
+
+  const endDrag = useCallback(() => {
+    multiDragRef.current = false;
+    setActiveDragId(null);
+    setDropIndicator(null);
   }, []);
+
+  // While a multi-page block is being dragged, mark where it will be inserted.
+  // (For single-page drags the normal dnd-kit gap preview already shows this.)
+  const onDragOver = useCallback(
+    (e: DragOverEvent) => {
+      if (!multiDragRef.current) return;
+      const over = e.over;
+      if (!over) return setDropIndicator(null);
+      const overId = String(over.id);
+      if (selected.has(overId)) return setDropIndicator(null);
+      const activeIndex = pages.findIndex((p) => p.id === String(e.active.id));
+      const overIndex = pages.findIndex((p) => p.id === overId);
+      if (activeIndex < 0 || overIndex < 0) return setDropIndicator(null);
+      // Dragging down inserts after the target; up inserts before it.
+      setDropIndicator({ id: overId, before: activeIndex >= overIndex });
+    },
+    [selected, pages],
+  );
+
+  // Freeze sibling shuffling during a multi-drag — a single-item gap would
+  // misrepresent a block move; the insertion bar shows the landing spot instead.
+  const sortStrategy = useCallback<SortingStrategy>(
+    (args) => (multiDragRef.current ? null : rectSortingStrategy(args)),
+    [],
+  );
+
+  const onDragEnd = useCallback(
+    (e: DragEndEvent) => {
+      const multi = multiDragRef.current;
+      endDrag();
+      const { active, over } = e;
+      if (!over || active.id === over.id) return;
+      const activeId = String(active.id);
+      const overId = String(over.id);
+      setPages((prev) => {
+        if (!multi) {
+          const from = prev.findIndex((p) => p.id === activeId);
+          const to = prev.findIndex((p) => p.id === overId);
+          if (from < 0 || to < 0) return prev;
+          return arrayMove(prev, from, to);
+        }
+        const activeIndex = prev.findIndex((p) => p.id === activeId);
+        const overIndex = prev.findIndex((p) => p.id === overId);
+        if (activeIndex < 0 || overIndex < 0) return prev;
+        const moving = prev.filter((p) => selected.has(p.id));
+        const rest = prev.filter((p) => !selected.has(p.id));
+        let insertIndex: number;
+        if (selected.has(overId)) {
+          // Dropped onto another selected page: gather the block at that spot.
+          insertIndex = rest.filter((p) => prev.indexOf(p) < overIndex).length;
+        } else {
+          const overInRest = rest.findIndex((p) => p.id === overId);
+          insertIndex = activeIndex < overIndex ? overInRest + 1 : overInRest;
+        }
+        return [
+          ...rest.slice(0, insertIndex),
+          ...moving,
+          ...rest.slice(insertIndex),
+        ];
+      });
+      setDirty(true);
+    },
+    [selected, endDrag],
+  );
 
   const resetPages = useCallback(() => {
     setPages(sources.flatMap((s) => initialPages(s.id, s.numPages)));
@@ -445,6 +541,7 @@ export default function App() {
     setSigs([]);
     setFormValues({});
     setSelected(new Set());
+    setGroupNames({});
     setDirty(false);
     flash("Reverted to the original order.");
   }, [sources, flash]);
@@ -452,10 +549,10 @@ export default function App() {
   // ----- Selection -----
   const toggleSelect = useCallback((id: string) => {
     setSelected((prev) => {
-      const n = new Set(prev);
-      if (n.has(id)) n.delete(id);
-      else n.add(id);
-      return n;
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
     });
   }, []);
 
@@ -464,6 +561,57 @@ export default function App() {
     [pages],
   );
   const clearSelect = useCallback(() => setSelected(new Set()), []);
+
+  // Rubber-band (marquee) selection. Press on empty grid space and drag a box;
+  // every page the box touches gets highlighted live. A plain drag replaces the
+  // selection (and a plain click on empty space clears it); holding Ctrl/⌘ adds
+  // to whatever was already selected. Pressing on a page itself is left alone so
+  // dnd-kit can still reorder.
+  const startMarquee = useCallback(
+    (e: React.PointerEvent) => {
+      if (e.button !== 0) return; // left button only
+      const target = e.target as HTMLElement;
+      if (target.closest(".thumb")) return; // thumbnails own drag + click
+      const x0 = e.clientX;
+      const y0 = e.clientY;
+      const base =
+        e.ctrlKey || e.metaKey ? new Set(selected) : new Set<string>();
+      setSelected(base); // pressing empty space clears, unless Ctrl is held
+      setMarquee({ x0, y0, x1: x0, y1: y0 });
+
+      // Select every thumbnail whose box intersects the drawn rectangle.
+      const hitTest = (bx: number, by: number) => {
+        const left = Math.min(x0, bx);
+        const right = Math.max(x0, bx);
+        const top = Math.min(y0, by);
+        const bottom = Math.max(y0, by);
+        const next = new Set(base);
+        gridRef.current
+          ?.querySelectorAll<HTMLElement>(".thumb[data-page-id]")
+          .forEach((node) => {
+            const r = node.getBoundingClientRect();
+            const hit =
+              r.left < right && r.right > left && r.top < bottom && r.bottom > top;
+            if (hit && node.dataset.pageId) next.add(node.dataset.pageId);
+          });
+        setSelected(next);
+      };
+
+      const onMove = (ev: PointerEvent) => {
+        ev.preventDefault();
+        setMarquee({ x0, y0, x1: ev.clientX, y1: ev.clientY });
+        hitTest(ev.clientX, ev.clientY);
+      };
+      const onUp = () => {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        setMarquee(null);
+      };
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+    },
+    [selected],
+  );
 
   const rotateSelected = useCallback(() => {
     setPages((prev) =>
@@ -485,6 +633,91 @@ export default function App() {
     setSelected(new Set());
     setDirty(true);
   }, [selected, pages.length, flash]);
+
+  // ----- Page groups (color tags; purely an organizing aid) -----
+  // Active groups, in palette order, with their live page counts and labels.
+  const groupsInUse = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const p of pages)
+      if (p.group) counts.set(p.group, (counts.get(p.group) ?? 0) + 1);
+    return GROUP_COLORS.filter((g) => counts.has(g.id)).map((g) => ({
+      id: g.id,
+      color: g.color,
+      label: groupNames[g.id] ?? g.name,
+      count: counts.get(g.id) ?? 0,
+    }));
+  }, [pages, groupNames]);
+
+  // The group shared by *every* selected page (so the swatch can show it as
+  // active), or null if the selection is mixed/ungrouped.
+  const selectedGroupId = useMemo(() => {
+    let g: string | null | undefined;
+    for (const p of pages) {
+      if (!selected.has(p.id)) continue;
+      const pg = p.group ?? null;
+      if (g === undefined) g = pg;
+      else if (g !== pg) return null;
+    }
+    return g ?? null;
+  }, [pages, selected]);
+
+  // Tag (or, with null, untag) the selected pages. Doesn't touch page order or
+  // the saved PDF, so it deliberately doesn't mark the doc dirty.
+  const assignGroup = useCallback(
+    (groupId: string | null) => {
+      setPages((prev) =>
+        prev.map((p) =>
+          selected.has(p.id) ? { ...p, group: groupId ?? undefined } : p,
+        ),
+      );
+    },
+    [selected],
+  );
+
+  const clearGroup = useCallback((groupId: string) => {
+    setPages((prev) =>
+      prev.map((p) => (p.group === groupId ? { ...p, group: undefined } : p)),
+    );
+  }, []);
+
+  const renameGroup = useCallback((groupId: string, name: string) => {
+    setGroupNames((prev) => {
+      const next = { ...prev };
+      const trimmed = name.trim();
+      if (trimmed) next[groupId] = trimmed;
+      else delete next[groupId];
+      return next;
+    });
+  }, []);
+
+  const selectGroup = useCallback(
+    (groupId: string) =>
+      setSelected(
+        new Set(pages.filter((p) => p.group === groupId).map((p) => p.id)),
+      ),
+    [pages],
+  );
+
+  // Move a whole group while keeping the pages' relative order: "gather" pulls
+  // scattered pages into one block where the group currently starts; "top"/
+  // "bottom" send the block to either end.
+  const reorderGroup = useCallback(
+    (groupId: string, mode: "gather" | "top" | "bottom") => {
+      setPages((prev) => {
+        const inGroup = prev.filter((p) => p.group === groupId);
+        if (!inGroup.length) return prev;
+        const rest = prev.filter((p) => p.group !== groupId);
+        if (mode === "top") return [...inGroup, ...rest];
+        if (mode === "bottom") return [...rest, ...inGroup];
+        const firstIdx = prev.findIndex((p) => p.group === groupId);
+        const before = prev.slice(0, firstIdx); // contains no group pages
+        const after = prev.slice(firstIdx).filter((p) => p.group !== groupId);
+        return [...before, ...inGroup, ...after];
+      });
+      setDirty(true);
+    },
+    [],
+  );
 
   // ----- Save / Extract / Split -----
   const handleSave = useCallback(async () => {
@@ -591,6 +824,42 @@ export default function App() {
     }
   }, [pages, selected, bytesById, bakeStamps, bakeSignatures, formMap, baseName, flash]);
 
+  // Save one PDF per color-group (in palette order), with overlays baked in.
+  const exportGroups = useCallback(async () => {
+    if (!groupsInUse.length) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const baked = await bakeStamps();
+      const sigMap = await bakeSignatures();
+      const files: { name: string; bytes: Uint8Array }[] = [];
+      for (const g of groupsInUse) {
+        const groupPages = pages.filter((p) => p.group === g.id);
+        if (!groupPages.length) continue;
+        const bytes = await buildPdf(bytesById, groupPages, baked, formMap, sigMap);
+        const safe =
+          g.label.replace(/[^\w.-]+/g, "_").replace(/^_+|_+$/g, "") || g.id;
+        files.push({ name: `${baseName}-${safe}.pdf`, bytes });
+      }
+      const dir = await saveMany(files);
+      if (dir)
+        flash(`Exported ${files.length} group${files.length === 1 ? "" : "s"}.`);
+    } catch (e) {
+      setError(`Export failed: ${String(e)}`);
+    } finally {
+      setBusy(false);
+    }
+  }, [
+    groupsInUse,
+    pages,
+    bytesById,
+    bakeStamps,
+    bakeSignatures,
+    formMap,
+    baseName,
+    flash,
+  ]);
+
   const closeAll = useCallback(() => {
     setSources([]);
     setPages([]);
@@ -598,6 +867,7 @@ export default function App() {
     setSigs([]);
     setFormValues({});
     setSelected(new Set());
+    setGroupNames({});
     setDirty(false);
     setPreview(null);
   }, []);
@@ -608,6 +878,17 @@ export default function App() {
 
   const hasDoc = sources.length > 0;
   const selCount = selected.size;
+  // When a selected page is the one being dragged, the whole selection moves;
+  // this count drives the overlay pile (0 = single-page drag, no pile).
+  const multiDragCount =
+    activeDragId && selected.has(activeDragId) && selected.size > 1
+      ? selected.size
+      : 0;
+  const dragPreviewItem =
+    multiDragCount > 0 && activeDragId ? pageById.get(activeDragId) : undefined;
+  const dragPreviewPdf = dragPreviewItem
+    ? sourceById.get(dragPreviewItem.srcId)?.pdf
+    : undefined;
 
   // Keyboard shortcuts.
   useEffect(() => {
@@ -785,6 +1066,31 @@ export default function App() {
               <button className="btn sm danger" onClick={deleteSelected} disabled={busy}>
                 Delete
               </button>
+              <span className="subbar-sep" />
+              <span className="group-assign">
+                <span className="group-assign-label">Group</span>
+                {GROUP_COLORS.map((g) => (
+                  <button
+                    key={g.id}
+                    className={`group-swatch ${
+                      selectedGroupId === g.id ? "active" : ""
+                    }`}
+                    style={{ background: g.color }}
+                    onClick={() => assignGroup(g.id)}
+                    title={`Tag selection: ${groupNames[g.id] ?? g.name}`}
+                    aria-label={`Group ${groupNames[g.id] ?? g.name}`}
+                  />
+                ))}
+                <button
+                  className="group-swatch clear"
+                  onClick={() => assignGroup(null)}
+                  title="Remove selection from its group"
+                  aria-label="Ungroup"
+                >
+                  ✕
+                </button>
+              </span>
+              <span className="subbar-sep" />
               <button className="btn sm" onClick={selectAll}>
                 Select all
               </button>
@@ -794,14 +1100,26 @@ export default function App() {
             </>
           ) : (
             <span className="hint">
-              Drag to reorder · hover to rotate/delete · check to select · click a
-              page to view & add text
+              Click a page to view · Ctrl-click or drag a box to select · tag a
+              selection with a color group · drag a page to reorder
             </span>
           )}
         </div>
       )}
 
-      <main className="content">
+      {hasDoc && !loading && groupsInUse.length > 0 && (
+        <GroupLegend
+          groups={groupsInUse}
+          busy={busy}
+          onSelect={selectGroup}
+          onRename={renameGroup}
+          onReorder={reorderGroup}
+          onClear={clearGroup}
+          onExportAll={exportGroups}
+        />
+      )}
+
+      <main className="content" onPointerDown={startMarquee}>
         {error && <div className="error">{error}</div>}
 
         {!hasDoc && !loading && (
@@ -823,13 +1141,16 @@ export default function App() {
           <DndContext
             sensors={sensors}
             collisionDetection={closestCenter}
+            onDragStart={onDragStart}
+            onDragOver={onDragOver}
             onDragEnd={onDragEnd}
+            onDragCancel={endDrag}
           >
             <SortableContext
               items={pages.map((p) => p.id)}
-              strategy={rectSortingStrategy}
+              strategy={sortStrategy}
             >
-              <div className="page-grid">
+              <div className="page-grid" ref={gridRef}>
                 {pages.map((item, i) => {
                   const pdf = sourceById.get(item.srcId)?.pdf;
                   if (!pdf) return null;
@@ -845,11 +1166,39 @@ export default function App() {
                       onRotate={() => rotatePage(item.id)}
                       onDelete={() => deletePage(item.id)}
                       onToggleSelect={() => toggleSelect(item.id)}
+                      groupColor={resolveGroupColor(item.group)}
+                      groupLabel={
+                        item.group
+                          ? groupNames[item.group] ?? groupDefaultName(item.group)
+                          : undefined
+                      }
+                      dragGhost={
+                        multiDragCount > 0 &&
+                        selected.has(item.id) &&
+                        item.id !== activeDragId
+                      }
+                      dragLifted={multiDragCount > 0 && item.id === activeDragId}
+                      dropEdge={
+                        dropIndicator?.id === item.id
+                          ? dropIndicator.before
+                            ? "left"
+                            : "right"
+                          : undefined
+                      }
                     />
                   );
                 })}
               </div>
             </SortableContext>
+            <DragOverlay dropAnimation={null}>
+              {dragPreviewItem && dragPreviewPdf && (
+                <DragPreview
+                  pdf={dragPreviewPdf}
+                  item={dragPreviewItem}
+                  count={multiDragCount}
+                />
+              )}
+            </DragOverlay>
           </DndContext>
         )}
       </main>
@@ -884,6 +1233,20 @@ export default function App() {
           onSplit={doSplit}
         />
       )}
+
+      {marquee &&
+        (Math.abs(marquee.x1 - marquee.x0) > 2 ||
+          Math.abs(marquee.y1 - marquee.y0) > 2) && (
+          <div
+            className="marquee"
+            style={{
+              left: Math.min(marquee.x0, marquee.x1),
+              top: Math.min(marquee.y0, marquee.y1),
+              width: Math.abs(marquee.x1 - marquee.x0),
+              height: Math.abs(marquee.y1 - marquee.y0),
+            }}
+          />
+        )}
 
       {notice && <div className="notice">{notice}</div>}
 
