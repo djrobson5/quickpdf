@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { check, type Update } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 import {
   DndContext,
   DragOverlay,
@@ -84,6 +86,8 @@ export default function App() {
   const [notes, setNotes] = useState<StickyNote[]>([]);
   const [thumbSize, setThumbSize] = useState(190); // page-grid thumbnail width (px)
   const [recents, setRecents] = useState<RecentFile[]>(() => getRecents());
+  const [update, setUpdate] = useState<Update | null>(null);
+  const [updating, setUpdating] = useState(false);
   const [formValues, setFormValues] = useState<
     Record<string, Record<string, FieldValue>>
   >({});
@@ -1293,6 +1297,36 @@ export default function App() {
     return () => unlisten?.();
   }, [loadAsNew]);
 
+  // Check GitHub for a newer release on launch (Tauri only); a banner offers to
+  // install it. Fails silently when offline / before the first updater release.
+  useEffect(() => {
+    if (!isTauri()) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const u = await check();
+        if (!cancelled && u) setUpdate(u);
+      } catch {
+        /* offline, no release yet, or a dev build — ignore */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const installUpdate = useCallback(async () => {
+    if (!update) return;
+    setUpdating(true);
+    try {
+      await update.downloadAndInstall();
+      await relaunch();
+    } catch (e) {
+      setError(`Update failed: ${String(e)}`);
+      setUpdating(false);
+    }
+  }, [update]);
+
   return (
     <div
       className="app"
@@ -1667,6 +1701,26 @@ export default function App() {
             }}
           />
         )}
+
+      {update && (
+        <div className="update-banner">
+          <span className="update-text">Update available — v{update.version}</span>
+          <button
+            className="btn sm accent"
+            onClick={installUpdate}
+            disabled={updating}
+          >
+            {updating ? "Installing…" : "Install & restart"}
+          </button>
+          <button
+            className="btn sm"
+            onClick={() => setUpdate(null)}
+            disabled={updating}
+          >
+            Later
+          </button>
+        </div>
+      )}
 
       {notice && <div className="notice">{notice}</div>}
 
