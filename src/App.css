@@ -1059,6 +1059,12 @@ body {
   accent-color: var(--accent);
 }
 
+.radio-note {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
 .num-input {
   width: 56px;
   background: var(--bg-elev-2);
@@ -1074,6 +1080,103 @@ body {
   margin: 14px 0 18px;
   font-size: 12px;
   color: var(--text-dim);
+}
+
+.ocr-modal {
+  min-width: 320px;
+}
+
+.ocr-bar {
+  height: 8px;
+  margin: 12px 0 2px;
+  background: var(--bg-elev-2);
+  border-radius: 5px;
+  overflow: hidden;
+}
+
+.ocr-bar-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 5px;
+  transition: width 0.2s ease;
+}
+
+/* Find / text search — floats above the full-screen viewer (z 100). */
+.find-bar {
+  position: fixed;
+  top: 60px;
+  right: 20px;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+
+.find-input {
+  flex: 0 1 320px;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 10px;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.find-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.find-count {
+  min-width: 64px;
+  font-size: 12px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.find-nav {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.find-nav:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.find-nav:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* Match highlights over the page in the viewer */
+.find-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.find-hit {
+  position: absolute;
+  background: rgba(255, 213, 0, 0.45);
+  border-radius: 2px;
+  mix-blend-mode: multiply;
+}
+
+.find-hit.current {
+  background: rgba(255, 138, 0, 0.65);
 }
 
 .modal-actions {

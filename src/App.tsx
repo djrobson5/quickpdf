@@ -35,6 +35,8 @@ import {
   splitPdf,
   imageToPdfPage,
   blankPdfPage,
+  buildPdfFromJpegPages,
+  addOcrTextLayer,
   initialPages,
   type PageItem,
   type TextStamp,
@@ -46,7 +48,10 @@ import {
   type BakedAnnot,
   type StickyNote,
   type BakedNote,
+  type OcrPageWords,
 } from "./lib/pdfEdit";
+import { ocrImage, terminateOcr } from "./lib/ocr";
+import { getPageTextItems, findMatchRects, clearTextCache } from "./lib/pdfText";
 import { dataUrlToBytes, imageSize } from "./lib/signatures";
 import {
   getRecents,
@@ -63,9 +68,15 @@ import { SortablePage } from "./components/SortablePage";
 import { DragPreview } from "./components/DragPreview";
 import { PageEditor } from "./components/PageEditor";
 import { SplitDialog } from "./components/SplitDialog";
+import { CompressDialog } from "./components/CompressDialog";
 import { GroupLegend } from "./components/GroupLegend";
 import logoUrl from "./assets/quickpdf-logo.svg";
 import "./App.css";
+
+const formatBytes = (n: number) =>
+  n >= 1024 * 1024
+    ? `${(n / 1048576).toFixed(1)} MB`
+    : `${Math.max(1, Math.round(n / 1024))} KB`;
 
 interface SourceDoc {
   id: string;
@@ -117,6 +128,21 @@ export default function App() {
   const [dragging, setDragging] = useState(false);
   const [preview, setPreview] = useState<number | null>(null);
   const [showSplit, setShowSplit] = useState(false);
+  const [showCompress, setShowCompress] = useState(false);
+  const [ocrProgress, setOcrProgress] = useState<{
+    page: number;
+    total: number;
+    sub: number;
+  } | null>(null);
+  const [findOpen, setFindOpen] = useState(false);
+  const [findQuery, setFindQuery] = useState("");
+  // Each match: the page's position in `pages`, and its index among that page's
+  // matching text items (so the viewer can highlight the current one).
+  const [matches, setMatches] = useState<{ pageIndex: number; within: number }[]>(
+    [],
+  );
+  const [currentMatch, setCurrentMatch] = useState(0);
+  const findInputRef = useRef<HTMLInputElement>(null);
   const [enhance, setEnhance] = useState(false);
   const [enhanceLevel, setEnhanceLevel] = useState(1.9);
 
@@ -228,6 +254,8 @@ export default function App() {
         setAnnots([]);
         setNotes([]);
         setFormValues({});
+        clearTextCache();
+        setFindOpen(false);
         setDirty(files.length > 1);
         let touched = false;
         for (const f of files)
@@ -1115,6 +1143,145 @@ export default function App() {
     [pages, bytesById, bakeStamps, bakeSignatures, bakeAnnots, bakeNotes, formMap, baseName, flash],
   );
 
+  // Shrink the (baked) document by rasterizing each page to a downsampled JPEG
+  // and rebuilding the PDF. Great for scans; rasterizes text/vector pages.
+  const compressPdf = useCallback(
+    async (scale: number, quality: number) => {
+      if (!pages.length) return;
+      setBusy(true);
+      setError(null);
+      try {
+        const baked = await bakeStamps();
+        const sigMap = await bakeSignatures();
+        const annotMap = await bakeAnnots();
+        const noteMap = await bakeNotes();
+        const srcBytes = await buildPdf(
+          bytesById,
+          pages,
+          baked,
+          formMap,
+          sigMap,
+          annotMap,
+          noteMap,
+        );
+        const originalSize = srcBytes.length;
+        const doc = await loadPdfDocument(srcBytes.slice(0)).promise;
+        const out: { jpeg: Uint8Array; widthPt: number; heightPt: number }[] = [];
+        for (let i = 0; i < doc.numPages; i++) {
+          const page = await doc.getPage(i + 1);
+          const pt = page.getViewport({ scale: 1 });
+          const vp = page.getViewport({ scale });
+          const canvas = document.createElement("canvas");
+          canvas.width = Math.floor(vp.width);
+          canvas.height = Math.floor(vp.height);
+          const ctx = canvas.getContext("2d");
+          if (!ctx) continue;
+          ctx.fillStyle = "#fff"; // JPEG has no alpha
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          await page.render({ canvas, canvasContext: ctx, viewport: vp }).promise;
+          out.push({
+            jpeg: dataUrlToBytes(canvas.toDataURL("image/jpeg", quality)),
+            widthPt: pt.width,
+            heightPt: pt.height,
+          });
+        }
+        const bytes = await buildPdfFromJpegPages(out);
+        const path = await savePdf(bytes, `${baseName}-compressed.pdf`);
+        if (path) {
+          setShowCompress(false);
+          const pct = Math.round((1 - bytes.length / originalSize) * 100);
+          flash(
+            `Compressed ${formatBytes(originalSize)} → ${formatBytes(bytes.length)}` +
+              (pct > 0 ? ` (${pct}% smaller).` : " (no reduction)."),
+          );
+        }
+      } catch (e) {
+        setError(`Compress failed: ${String(e)}`);
+      } finally {
+        setBusy(false);
+      }
+    },
+    [pages, bytesById, bakeStamps, bakeSignatures, bakeAnnots, bakeNotes, formMap, baseName, flash],
+  );
+
+  // OCR the (baked) document and save a copy with an invisible, searchable text
+  // layer. Renders each page ~200 DPI → tesseract → bake the words.
+  const runOcr = useCallback(async () => {
+    if (!pages.length) return;
+    setBusy(true);
+    setError(null);
+    setOcrProgress({ page: 0, total: pages.length, sub: 0 });
+    try {
+      const baked = await bakeStamps();
+      const sigMap = await bakeSignatures();
+      const annotMap = await bakeAnnots();
+      const noteMap = await bakeNotes();
+      const srcBytes = await buildPdf(
+        bytesById,
+        pages,
+        baked,
+        formMap,
+        sigMap,
+        annotMap,
+        noteMap,
+      );
+      const doc = await loadPdfDocument(srcBytes.slice(0)).promise;
+      const total = doc.numPages;
+      const scale = 200 / 72; // ~200 DPI — good OCR accuracy without huge canvases
+      const pageWords: OcrPageWords[] = [];
+      for (let i = 0; i < total; i++) {
+        setOcrProgress({ page: i + 1, total, sub: 0 });
+        const page = await doc.getPage(i + 1);
+        const vp = page.getViewport({ scale });
+        // Scale-1 displayed viewport → maps OCR pixels to PDF space, handling
+        // /Rotate exactly (same as text stamps via convertToPdfPoint).
+        const vp1 = page.getViewport({ scale: 1 }) as unknown as {
+          convertToPdfPoint: (x: number, y: number) => number[];
+        };
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.floor(vp.width);
+        canvas.height = Math.floor(vp.height);
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          pageWords.push({ words: [] });
+          continue;
+        }
+        ctx.fillStyle = "#fff";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        await page.render({ canvas, canvasContext: ctx, viewport: vp }).promise;
+        const ocrWords = await ocrImage(canvas, (p) =>
+          setOcrProgress({ page: i + 1, total, sub: p }),
+        );
+        const words = ocrWords.map((w) => {
+          const vx = w.x0 / scale;
+          const vyBottom = w.y1 / scale;
+          const [ax, ay] = vp1.convertToPdfPoint(vx, vyBottom);
+          const [bx, by] = vp1.convertToPdfPoint(vx + 10, vyBottom);
+          return {
+            text: w.text,
+            x: ax,
+            y: ay,
+            size: Math.max(1, (w.y1 - w.y0) / scale),
+            rotationDeg: (Math.atan2(by - ay, bx - ax) * 180) / Math.PI,
+          };
+        });
+        pageWords.push({ words });
+      }
+      const outBytes = await addOcrTextLayer(srcBytes, pageWords);
+      const path = await savePdf(outBytes, `${baseName}-ocr.pdf`);
+      if (path) {
+        const n = pageWords.reduce((a, p) => a + p.words.length, 0);
+        flash(`Added a searchable text layer (${n} words across ${total} page${total === 1 ? "" : "s"}).`);
+      }
+    } catch (e) {
+      setError(`OCR failed: ${String(e)}`);
+    } finally {
+      setOcrProgress(null);
+      setBusy(false);
+      await terminateOcr();
+    }
+  }, [pages, bytesById, bakeStamps, bakeSignatures, bakeAnnots, bakeNotes, formMap, baseName, flash]);
+
   const exportImages = useCallback(async () => {
     const chosen = pages.filter((p) => selected.has(p.id));
     if (!chosen.length) return;
@@ -1225,6 +1392,63 @@ export default function App() {
     ? sourceById.get(dragPreviewItem.srcId)?.pdf
     : undefined;
 
+  // ----- Find / text search -----
+  // Rebuild the match list when the query (or page set) changes while open.
+  useEffect(() => {
+    if (!findOpen) return;
+    const q = findQuery.trim().toLowerCase();
+    if (!q) {
+      setMatches([]);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      const found: { pageIndex: number; within: number }[] = [];
+      for (let i = 0; i < pages.length; i++) {
+        const item = pages[i];
+        const src = sourceById.get(item.srcId);
+        if (!src) continue;
+        const items = await getPageTextItems(
+          src.pdf,
+          item.srcId,
+          item.srcIndex,
+          item.rotation,
+        );
+        if (cancelled) return;
+        const rects = findMatchRects(items, q);
+        for (let within = 0; within < rects.length; within++)
+          found.push({ pageIndex: i, within });
+      }
+      if (!cancelled) {
+        setMatches(found);
+        setCurrentMatch(0);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [findOpen, findQuery, pages, sourceById]);
+
+  // Open the viewer to the current match's page.
+  useEffect(() => {
+    if (!findOpen || !matches.length) return;
+    const m = matches[currentMatch];
+    if (m) setPreview(m.pageIndex);
+  }, [findOpen, matches, currentMatch]);
+
+  const stepMatch = useCallback(
+    (delta: number) =>
+      setCurrentMatch((c) =>
+        matches.length ? (c + delta + matches.length) % matches.length : 0,
+      ),
+    [matches.length],
+  );
+
+  const openFind = useCallback(() => {
+    setFindOpen(true);
+    setTimeout(() => findInputRef.current?.select(), 0);
+  }, []);
+
   // Keyboard shortcuts.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -1248,6 +1472,11 @@ export default function App() {
         handleSaveInPlace();
         return;
       }
+      if (mod && k === "f") {
+        e.preventDefault();
+        openFind();
+        return;
+      }
       if (preview !== null || typing) return; // editor handles its own keys
       if (mod && k === "a") {
         e.preventDefault();
@@ -1269,6 +1498,7 @@ export default function App() {
     selCount,
     handleOpen,
     handleSaveInPlace,
+    openFind,
     selectAll,
     deleteSelected,
     clearSelect,
@@ -1404,6 +1634,22 @@ export default function App() {
               >
                 Split
               </button>
+              <button
+                className="btn"
+                onClick={() => setShowCompress(true)}
+                disabled={busy}
+                title="Shrink the file by re-encoding pages as images"
+              >
+                Compress
+              </button>
+              <button
+                className="btn"
+                onClick={runOcr}
+                disabled={busy}
+                title="Recognize text in scans and save a searchable copy"
+              >
+                OCR
+              </button>
               <button className="btn" onClick={resetPages} disabled={!dirty}>
                 Reset
               </button>
@@ -1446,6 +1692,57 @@ export default function App() {
           </div>
         )}
       </header>
+
+      {hasDoc && findOpen && (
+        <div className="find-bar">
+          <input
+            ref={findInputRef}
+            className="find-input"
+            placeholder="Find in document…"
+            value={findQuery}
+            onChange={(e) => setFindQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                stepMatch(e.shiftKey ? -1 : 1);
+              } else if (e.key === "Escape") {
+                e.preventDefault();
+                setFindOpen(false);
+              }
+            }}
+          />
+          <span className="find-count">
+            {findQuery.trim()
+              ? matches.length
+                ? `${currentMatch + 1} / ${matches.length}`
+                : "No results"
+              : ""}
+          </span>
+          <button
+            className="find-nav"
+            onClick={() => stepMatch(-1)}
+            disabled={!matches.length}
+            title="Previous (Shift+Enter)"
+          >
+            ↑
+          </button>
+          <button
+            className="find-nav"
+            onClick={() => stepMatch(1)}
+            disabled={!matches.length}
+            title="Next (Enter)"
+          >
+            ↓
+          </button>
+          <button
+            className="find-nav"
+            onClick={() => setFindOpen(false)}
+            title="Close (Esc)"
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       {hasDoc && !loading && (
         <div className={`subbar ${selCount > 0 ? "selecting" : ""}`}>
@@ -1673,6 +1970,12 @@ export default function App() {
           onAddNote={addNote}
           onUpdateNote={updateNote}
           onDeleteNote={deleteNote}
+          findQuery={findOpen ? findQuery : ""}
+          findCurrentWithin={
+            findOpen && matches[currentMatch]?.pageIndex === preview
+              ? matches[currentMatch].within
+              : -1
+          }
           onSetField={(name, value) =>
             setFormValue(pages[preview].srcId, name, value)
           }
@@ -1686,6 +1989,41 @@ export default function App() {
           onCancel={() => setShowSplit(false)}
           onSplit={doSplit}
         />
+      )}
+
+      {showCompress && (
+        <CompressDialog
+          pageCount={pages.length}
+          busy={busy}
+          onCancel={() => setShowCompress(false)}
+          onCompress={compressPdf}
+        />
+      )}
+
+      {ocrProgress && (
+        <div className="modal-backdrop">
+          <div className="modal ocr-modal">
+            <h3>Recognizing text…</h3>
+            <p className="modal-sub">
+              Page {Math.max(1, ocrProgress.page)} of {ocrProgress.total}
+            </p>
+            <div className="ocr-bar">
+              <div
+                className="ocr-bar-fill"
+                style={{
+                  width: `${Math.round(
+                    ((ocrProgress.page - 1 + ocrProgress.sub) /
+                      Math.max(1, ocrProgress.total)) *
+                      100,
+                  )}%`,
+                }}
+              />
+            </div>
+            <p className="modal-note">
+              Running entirely offline — large scans take a few seconds per page.
+            </p>
+          </div>
+        </div>
       )}
 
       {marquee &&

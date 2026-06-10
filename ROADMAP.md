@@ -30,17 +30,23 @@ slider; viewer zoom (scroll / pinch / Ctrl-scroll, drag to pan); **save-in-place
 updater) and a GitHub Actions workflow that builds, signs, and publishes the
 installer on each version tag.
 
+## Shipped — v0.2.1
+
+**Scan tools:** **Compress** (re-encode pages to shrink scans, with quality
+presets) and **OCR** — recognise text in scans using a bundled, fully-offline
+Tesseract engine, baking an invisible selectable/searchable text layer
+(rotation-correct).
+
+**In-app Find:** Ctrl+F searches text across all pages with on-page match
+highlighting and prev/next navigation — works on text PDFs and on OCR'd scans.
+
 ---
 
 ## Candidates — next
 
 Effort estimates are rough. Themes are independent; pick a focused set.
 
-### B. Scan power tools (fits scan-heavy use)
-- **OCR → searchable text layer** (select / copy / Find text in scans).
-  Effort: **large** — bundles an offline OCR engine (e.g. Tesseract).
-- **Compress / reduce size** — downsample & re-encode images (scans email-friendly).
-  Effort: **medium**
+### B. Scan power tools (the rest, not yet done)
 - **Scan cleanup** — bake auto-contrast / B&W / deskew into output; evolution of
   the "Enhance" toggle. Effort: **medium**
 

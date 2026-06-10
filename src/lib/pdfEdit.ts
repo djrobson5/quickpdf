@@ -12,8 +12,12 @@ import {
   PDFRadioGroup,
   PDFTextField,
   StandardFonts,
+  TextRenderingMode,
   degrees,
+  popGraphicsState,
+  pushGraphicsState,
   rgb,
+  setTextRenderingMode,
 } from "pdf-lib";
 
 export interface PageItem {
@@ -446,6 +450,69 @@ export async function blankPdfPage(
 ): Promise<Uint8Array> {
   const doc = await PDFDocument.create();
   doc.addPage([width, height]);
+  return doc.save();
+}
+
+/**
+ * Build a PDF from one full-page JPEG per page (used by Compress: each page is
+ * rasterized + re-encoded, then rebuilt at its original point size).
+ */
+export async function buildPdfFromJpegPages(
+  pages: { jpeg: Uint8Array; widthPt: number; heightPt: number }[],
+): Promise<Uint8Array> {
+  const doc = await PDFDocument.create();
+  for (const p of pages) {
+    const img = await doc.embedJpg(p.jpeg);
+    const page = doc.addPage([p.widthPt, p.heightPt]);
+    page.drawImage(img, { x: 0, y: 0, width: p.widthPt, height: p.heightPt });
+  }
+  return doc.save();
+}
+
+/**
+ * Per-page OCR words already resolved to PDF user space (anchor x/y = baseline
+ * bottom-left, size in points, rotationDeg from the page's display rotation) —
+ * exactly like text stamps, so it bakes correctly on /Rotate pages.
+ */
+export interface OcrPageWords {
+  words: { text: string; x: number; y: number; size: number; rotationDeg: number }[];
+}
+
+/**
+ * Add an invisible, selectable/searchable text layer over the existing pages
+ * (the scan image is untouched). Each OCR word is drawn in text-render-mode 3.
+ */
+export async function addOcrTextLayer(
+  pdfBytes: Uint8Array,
+  pageWords: OcrPageWords[],
+): Promise<Uint8Array> {
+  const doc = await PDFDocument.load(pdfBytes, { ignoreEncryption: true });
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+  const pages = doc.getPages();
+  for (let i = 0; i < pages.length; i++) {
+    const pg = pages[i];
+    const pw = pageWords[i];
+    if (!pw || !pw.words.length) continue;
+    pg.pushOperators(
+      pushGraphicsState(),
+      setTextRenderingMode(TextRenderingMode.Invisible),
+    );
+    for (const w of pw.words) {
+      try {
+        if (w.size <= 0) continue;
+        pg.drawText(w.text, {
+          x: w.x,
+          y: w.y,
+          size: w.size,
+          font,
+          rotate: degrees(w.rotationDeg),
+        });
+      } catch {
+        // Skip words Helvetica can't encode (stray OCR glyphs).
+      }
+    }
+    pg.pushOperators(popGraphicsState());
+  }
   return doc.save();
 }
 

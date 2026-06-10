@@ -36,7 +36,9 @@ files never leave your machine.
 - **Open & view** — open PDFs (button or drag-drop), every page as a crisp thumbnail, click any page for a large viewer with an **Enhance** contrast toggle for faint scans; scroll or pinch to **zoom** (drag to pan)
 - **Page management** — drag-to-reorder (single page or a whole multi-select block), rotate, delete, insert blank or duplicate pages; box-select with a marquee, or click + Ctrl-click; a thumbnail-size slider
 - **Page groups** — tag pages with color groups (an organizing aid that never changes the saved file): select, rename, gather, or move a group as a block, and export each group as its own PDF
-- **Merge / Split / Extract** — combine multiple PDFs (open or drag several), extract selected pages to a new PDF, split into a folder of files
+- **Merge / Split / Extract / Compress** — combine multiple PDFs (open or drag several), extract selected pages to a new PDF, split into a folder of files, or compress (re-encode pages) to shrink scans
+- **Find** — Ctrl+F to search text across all pages with on-page highlights (works on text PDFs and on OCR'd scans)
+- **OCR** — recognize text in scans (offline, bundled Tesseract) and save a copy with an invisible, selectable/searchable text layer
 - **Markup & annotation** — highlight / underline / strikethrough, freehand pen, lines / arrows / boxes, and colour sticky-note comments; all baked into the saved PDF
 - **Text & forms** — stamp text anywhere + auto-detect & fill real AcroForm fields (text, checkbox, radio, dropdown), flattened on save
 - **Signatures** — draw (with a trackpad **glide mode**) / upload / reusable saved library; place, drag, resize; baked in on save

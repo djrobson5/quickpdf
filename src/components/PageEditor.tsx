@@ -14,6 +14,7 @@ import { SignatureBox } from "./SignatureBox";
 import { SignatureDialog } from "./SignatureDialog";
 import { AnnotationLayer, type Tool } from "./AnnotationLayer";
 import { NoteBox } from "./NoteBox";
+import { getPageTextItems, findMatchRects, type MatchRect } from "../lib/pdfText";
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
@@ -84,6 +85,8 @@ export function PageEditor({
   onAddNote,
   onUpdateNote,
   onDeleteNote,
+  findQuery,
+  findCurrentWithin,
   onSetField,
 }: {
   pdfFor: (item: PageItem) => PDFDocumentProxy | undefined;
@@ -108,6 +111,10 @@ export function PageEditor({
   onAddNote: (pageId: string, xNorm: number, yNorm: number) => void;
   onUpdateNote: (id: string, patch: Partial<StickyNote>) => void;
   onDeleteNote: (id: string) => void;
+  /** Active Find query ("" when Find is closed) and the index of the current
+   *  match among this page's matching items (-1 if the current match is elsewhere). */
+  findQuery: string;
+  findCurrentWithin: number;
   onSetField: (name: string, value: FieldValue) => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -125,6 +132,7 @@ export function PageEditor({
   const [selectedAnnot, setSelectedAnnot] = useState<string | null>(null);
   const [zoom, setZoom] = useState(1); // CSS-transform zoom (1 = fit)
   const [pan, setPan] = useState({ x: 0, y: 0 }); // screen-px offset when zoomed
+  const [findRects, setFindRects] = useState<MatchRect[]>([]); // Find match rects on this page
 
   const item = pages[index];
   const pdf = pdfFor(item);
@@ -200,6 +208,28 @@ export function PageEditor({
     setSelectedAnnot(null);
     setPan({ x: 0, y: 0 });
   }, [index]);
+
+  // Find: match sub-rects on the current page (for highlighting).
+  useEffect(() => {
+    if (!findQuery.trim() || !pdf) {
+      setFindRects([]);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      const items = await getPageTextItems(
+        pdf,
+        item.srcId,
+        item.srcIndex,
+        item.rotation,
+      );
+      if (cancelled) return;
+      setFindRects(findMatchRects(items, findQuery));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [findQuery, pdf, item.srcId, item.srcIndex, item.rotation]);
 
   usePageCanvas(
     canvasRef,
@@ -457,6 +487,22 @@ export function PageEditor({
           }}
         >
           <canvas ref={canvasRef} className={ready ? "ready" : ""} />
+          {findRects.length > 0 && (
+            <div className="find-layer">
+              {findRects.map((t, i) => (
+                <div
+                  key={i}
+                  className={`find-hit ${i === findCurrentWithin ? "current" : ""}`}
+                  style={{
+                    left: `${t.left * 100}%`,
+                    top: `${t.top * 100}%`,
+                    width: `${t.width * 100}%`,
+                    height: `${t.height * 100}%`,
+                  }}
+                />
+              ))}
+            </div>
+          )}
           <div className="form-layer">
             {fields.map((f) => (
               <FormField
