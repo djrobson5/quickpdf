@@ -1202,12 +1202,17 @@ body {
   position: absolute;
   pointer-events: auto;
   min-width: 60px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
 }
 
 .stamp-toolbar {
+  /* Float above the text box WITHOUT reserving flow space. Otherwise the
+     stamp's top edge (= yNorm) anchors the toolbar, not the glyphs, and the
+     baker (which assumes yNorm ~ text top) lands text a toolbar-height too
+     high — i.e. floating above the line. */
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  margin-bottom: 2px;
   display: flex;
   align-items: center;
   gap: 2px;
